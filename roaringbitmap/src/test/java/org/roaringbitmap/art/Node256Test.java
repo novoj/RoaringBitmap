@@ -2,6 +2,8 @@ package org.roaringbitmap.art;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import static org.roaringbitmap.art.NodeCommon.checkKeyAndPosAlign;
+
 
 public class Node256Test {
 
@@ -10,8 +12,9 @@ public class Node256Test {
     Node256 node256 = new Node256(0);
     LeafNode leafNode = new LeafNode(0, 0);
     for (int i = 0; i < 256; i++) {
-      node256 = Node256.insert(node256, leafNode, (byte) i);
+      node256 = node256.insert(leafNode, (byte) i);
     }
+    checkKeyAndPosAlign(node256);
     int minPos = node256.getMinPos();
     Assertions.assertEquals(0, minPos);
     int currentPos = minPos;
@@ -20,6 +23,7 @@ public class Node256Test {
       Assertions.assertEquals(i, nextLargerPos);
       currentPos = nextLargerPos;
     }
+    checkKeyAndPosAlign(node256);
     int maxPos = node256.getMaxPos();
     Assertions.assertEquals(255, maxPos);
     currentPos = maxPos;
@@ -36,6 +40,7 @@ public class Node256Test {
     Assertions.assertEquals(121, pos121);
     int nextPos119 = node256.getNextSmallerPos(pos121);
     Assertions.assertEquals(119, nextPos119);
+    checkKeyAndPosAlign(node256);
   }
 
   @Test
@@ -43,7 +48,7 @@ public class Node256Test {
     Node256 node256 = new Node256(0);
     LeafNode leafNode = new LeafNode(0, 0);
     for (int i = 0; i < 37; i++) {
-      node256 = Node256.insert(node256, leafNode, (byte) i);
+      node256 = node256.insert(leafNode, (byte) i);
     }
     int maxPos = node256.getMaxPos();
     Node node = node256.remove(maxPos);
@@ -56,14 +61,14 @@ public class Node256Test {
 
   @Test
   public void testWithOffsetBeforeBytes() {
-    Node nodes = new Node256(0);
+    Node256 nodes = new Node256(0);
     LeafNode leafNode = new LeafNode(0, 0);
     int insertCount = 75;
     int offset = 40;
 
     // setup data
     for (int i = 0; i < insertCount; i++) {
-      nodes = Node256.insert(nodes, leafNode, (byte) (offset + i));
+      nodes = nodes.insert(leafNode, (byte) (offset + i));
     }
     // check we are testing the correct data structure
     Assertions.assertTrue(nodes instanceof Node256);
@@ -74,10 +79,10 @@ public class Node256Test {
     Assertions.assertEquals(offset, nodes.getMinPos());
 
     // The position of a value before the "first" value dose not exist thus ILLEGAL_IDX
-    Assertions.assertEquals(Node.ILLEGAL_IDX, nodes.getNextSmallerPos(nodes.getMinPos()));
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, nodes.getNextSmallerPos(nodes.getMinPos()));
 
     // The position of a value after the "last" value dose not exist thus ILLEGAL_IDX
-    Assertions.assertEquals(Node.ILLEGAL_IDX, nodes.getNextLargerPos(nodes.getMaxPos()));
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, nodes.getNextLargerPos(nodes.getMaxPos()));
 
     // so for each value in the inserted range the next of the prior should be the same as
     // the location of found current.
@@ -100,7 +105,7 @@ public class Node256Test {
 
   @Test
   public void testWithOffsetAndGapsBytes() {
-    Node nodes = new Node256(0);
+    Node256 nodes = new Node256(0);
     LeafNode leafNode = new LeafNode(0, 0);
     int insertCount = 75;
     int step = 2;
@@ -108,7 +113,7 @@ public class Node256Test {
 
     // setup data
     for (int i = 0; i < insertCount; i++) {
-      nodes = Node256.insert(nodes, leafNode, (byte) (offset + (i * step)));
+      nodes = nodes.insert(leafNode, (byte) (offset + (i * step)));
     }
     // check we are testing the correct data structure
     Assertions.assertTrue(nodes instanceof Node256);
@@ -119,10 +124,10 @@ public class Node256Test {
     Assertions.assertEquals(offset, nodes.getMinPos());
 
     // The position of a value before the "first" value dose not exist thus ILLEGAL_IDX
-    Assertions.assertEquals(Node.ILLEGAL_IDX, nodes.getNextSmallerPos(nodes.getMinPos()));
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, nodes.getNextSmallerPos(nodes.getMinPos()));
 
     // The position of a value after the "last" value dose not exist thus ILLEGAL_IDX
-    Assertions.assertEquals(Node.ILLEGAL_IDX, nodes.getNextLargerPos(nodes.getMaxPos()));
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, nodes.getNextLargerPos(nodes.getMaxPos()));
 
     // so for each value in the inserted range the next of the prior should be the same as
     // the location of found current.
@@ -147,7 +152,7 @@ public class Node256Test {
 
   @Test
   public void testDenseNonZeroBasedKeysSearch() {
-    Node nodes = new Node256(0);
+    Node256 nodes = new Node256(0);
     final int insertCount = 75;
     final int keyOffset = 0x20;
 
@@ -155,7 +160,7 @@ public class Node256Test {
     for (int i = 0; i < insertCount; i++) {
       LeafNode leafNode = new LeafNode(i, i);
       byte key = (byte) (i + keyOffset);
-      nodes = Node256.insert(nodes, leafNode, key);
+      nodes = nodes.insert(leafNode, key);
     }
     // check we are testing the correct thing
     Assertions.assertTrue(nodes instanceof Node256);
@@ -174,18 +179,18 @@ public class Node256Test {
     SearchResult sr = nodes.getNearestChildPos((byte) (keyOffset - 1));
     Assertions.assertEquals(SearchResult.Outcome.NOT_FOUND, sr.outcome);
     Assertions.assertFalse(sr.hasKeyPos());
-    Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextSmallerPos());
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextSmallerPos());
 
     // search after the last value aka "insertCount", and surprise, nothing will be found
     sr = nodes.getNearestChildPos((byte) (keyOffset + insertCount));
     Assertions.assertEquals(SearchResult.Outcome.NOT_FOUND, sr.outcome);
     Assertions.assertFalse(sr.hasKeyPos());
-    Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextLargerPos());
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextLargerPos());
   }
 
   @Test
   public void testSparseNonZeroBasedKeysSearch() {
-    Node nodes = new Node256(0);
+    Node256 nodes = new Node256(0);
     final int insertCount = 75;
     final int lastValue = insertCount - 1;
     final int step = 3;
@@ -195,7 +200,7 @@ public class Node256Test {
     for (int i = 0; i < insertCount; i++) {
       LeafNode leafNode = new LeafNode(i, i);
       byte key = (byte) ((i * step) + keyOffset);
-      nodes = Node256.insert(nodes, leafNode, key);
+      nodes = nodes.insert(leafNode, key);
     }
     // check we are testing the correct thing
     Assertions.assertTrue(nodes instanceof Node256);
@@ -219,7 +224,7 @@ public class Node256Test {
 
         // the value smaller than the first should be INVALID, and the rest should be the prior key
         if (i == 0) {
-          Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextSmallerPos());
+          Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextSmallerPos());
         } else {
           int expected = Byte.toUnsignedInt(key) - step;
           int result = Byte.toUnsignedInt(nodes.getChildKey(sr.getNextSmallerPos()));
@@ -244,7 +249,7 @@ public class Node256Test {
 
         // the value larger than the last should be INVALID and the rest should be the next key
         if (i == lastValue) {
-          Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextLargerPos());
+          Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextLargerPos());
         } else {
           int expected = Byte.toUnsignedInt(key) + step;
           int result = Byte.toUnsignedInt(nodes.getChildKey(sr.getNextLargerPos()));
@@ -257,12 +262,12 @@ public class Node256Test {
     SearchResult sr = nodes.getNearestChildPos((byte) (keyOffset - 1));
     Assertions.assertEquals(SearchResult.Outcome.NOT_FOUND, sr.outcome);
     Assertions.assertFalse(sr.hasKeyPos());
-    Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextSmallerPos());
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextSmallerPos());
 
     // search after the last value aka "insertCount", and surprise, nothing will be found
     sr = nodes.getNearestChildPos((byte) (keyOffset + (insertCount * step)));
     Assertions.assertEquals(SearchResult.Outcome.NOT_FOUND, sr.outcome);
     Assertions.assertFalse(sr.hasKeyPos());
-    Assertions.assertEquals(Node.ILLEGAL_IDX, sr.getNextLargerPos());
+    Assertions.assertEquals(BranchNode.ILLEGAL_IDX, sr.getNextLargerPos());
   }
 }

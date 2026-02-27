@@ -630,19 +630,19 @@ public class ImmutableRoaringBitmap
     answer.getMappeableRoaringArray().appendCopiesUntil(bm.highLowContainer, hbStart);
 
     final int max = (BufferUtil.maxLowBit());
-    for (char hb = hbStart; hb <= hbLast; ++hb) {
-      final int containerStart = (hb == hbStart) ? (lbStart) : 0;
-      final int containerLast = (hb == hbLast) ? (lbLast) : max;
+    for (int hb = hbStart; hb <= hbLast; ++hb) {
+      final int containerStart = (hb == hbStart) ? lbStart : 0;
+      final int containerLast = (hb == hbLast) ? lbLast : max;
 
-      final int i = bm.highLowContainer.getIndex(hb);
-      final int j = answer.getMappeableRoaringArray().getIndex(hb);
+      final int i = bm.highLowContainer.getIndex((char) hb);
+      final int j = answer.getMappeableRoaringArray().getIndex((char) hb);
       assert j < 0;
 
       if (i >= 0) {
         final MappeableContainer c =
             bm.highLowContainer.getContainerAtIndex(i).not(containerStart, containerLast + 1);
         if (!c.isEmpty()) {
-          answer.getMappeableRoaringArray().insertNewKeyValueAt(-j - 1, hb, c);
+          answer.getMappeableRoaringArray().insertNewKeyValueAt(-j - 1, (char) hb, c);
         }
 
       } else { // *think* the range of ones must never be
@@ -650,7 +650,9 @@ public class ImmutableRoaringBitmap
         answer
             .getMappeableRoaringArray()
             .insertNewKeyValueAt(
-                -j - 1, hb, MappeableContainer.rangeOfOnes(containerStart, containerLast + 1));
+                -j - 1,
+                (char) hb,
+                MappeableContainer.rangeOfOnes(containerStart, containerLast + 1));
       }
     }
     // copy the containers after the active area.
@@ -1734,6 +1736,8 @@ public class ImmutableRoaringBitmap
         size += this.highLowContainer.getCardinality(i);
       } else if (key == xhigh) {
         return size + this.highLowContainer.getContainerAtIndex(i).rank(lowbits(x));
+      } else {
+        break;
       }
     }
     return size;
@@ -1764,6 +1768,8 @@ public class ImmutableRoaringBitmap
         size += this.highLowContainer.getContainerAtIndex(i).getCardinality();
       } else if (key == xhigh) {
         return size + this.highLowContainer.getContainerAtIndex(i).rank(lowbits((int) (end - 1)));
+      } else {
+        break;
       }
     }
     return size;
@@ -2037,6 +2043,18 @@ public class ImmutableRoaringBitmap
       mcp.advance();
     }
     return c;
+  }
+
+  /**
+   * Creates a mutable bitmap using copy-on-write semantics.
+   * Containers from this bitmap will only be copied when they need to be modified.
+   * This provides better performance for memory-mapped bitmaps that are used mostly
+   * for read operations with occasional modifications.
+   *
+   * @return a mutable bitmap with copy-on-write semantics.
+   */
+  public CopyOnWriteRoaringBitmap toMutableRoaringBitmapCopyOnWrite() {
+    return CopyOnWriteRoaringBitmap.fromImmutable(this);
   }
 
   /**

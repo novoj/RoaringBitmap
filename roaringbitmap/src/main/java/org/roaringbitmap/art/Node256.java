@@ -8,7 +8,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.LongBuffer;
 
-public class Node256 extends Node {
+public class Node256 extends BranchNode {
 
   Node[] children = new Node[256];
   // a helper utility field
@@ -16,7 +16,20 @@ public class Node256 extends Node {
   private static final long LONG_MASK = 0xffffffffffffffffL;
 
   public Node256(int compressedPrefixSize) {
-    super(NodeType.NODE256, compressedPrefixSize);
+    super(compressedPrefixSize);
+  }
+
+  @Override
+  protected Node256 clone() {
+    Node256 clone = new Node256(this.prefixLength());
+    System.arraycopy(this.bitmapMask,0,clone.bitmapMask,0,bitmapMask.length);
+    postClone(clone, this.children, clone.children);
+    return clone;
+  }
+
+  @Override
+  protected NodeType nodeType() {
+    return NodeType.NODE256;
   }
 
   @Override
@@ -26,6 +39,11 @@ public class Node256 extends Node {
       return pos;
     }
     return ILLEGAL_IDX;
+  }
+
+  @Override
+  public Node getChildAtKey(byte key) {
+    return children[Byte.toUnsignedInt(key)];
   }
 
   @Override
@@ -126,18 +144,17 @@ public class Node256 extends Node {
   /**
    * insert the child node into the node256 node with the key byte
    *
-   * @param currentNode the node256
    * @param child the child node
    * @param key the key byte
    * @return the node256 node
    */
-  public static Node256 insert(Node currentNode, Node child, byte key) {
-    Node256 node256 = (Node256) currentNode;
-    node256.count++;
+  @Override
+  protected Node256 insert(Node child, byte key) {
+    this.count++;
     int i = Byte.toUnsignedInt(key);
-    node256.children[i] = child;
-    setBit(key, node256.bitmapMask);
-    return node256;
+    this.children[i] = child;
+    setBit(key, this.bitmapMask);
+    return this;
   }
 
   static void setBit(byte key, long[] bitmapMask) {
@@ -155,7 +172,7 @@ public class Node256 extends Node {
     bitmapMask[longPos] &= ~(1L << pos);
     this.count--;
     if (this.count <= 36) {
-      Node48 node48 = new Node48(this.prefixLength);
+      Node48 node48 = new Node48(this.prefixLength());
       int j = 0;
       int currentPos = ILLEGAL_IDX;
       while ((currentPos = getNextLargerPos(currentPos)) != ILLEGAL_IDX) {

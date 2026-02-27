@@ -1,8 +1,16 @@
+import java.time.Duration
+
 plugins {
     id("net.researchgate.release") version "2.8.1"
     id("com.github.ben-manes.versions") version "0.38.0"
     id("maven-publish")
     id("com.diffplug.spotless") version "6.25.0"
+    id("signing")
+    id("com.gradleup.nmcp.aggregation") version "1.4.3"
+}
+
+repositories {
+    mavenCentral()
 }
 
 
@@ -45,10 +53,12 @@ subprojects {
         }
 
         withType<Test> {
-            val javaToolchains  = project.extensions.getByType<JavaToolchainService>()
+            val javaToolchains = project.extensions.getByType<JavaToolchainService>()
+            val requestedVersion = (project.properties["testOnJava"] ?: "11").toString().toInt()
+            val currentVersion = JavaVersion.current().majorVersion.toInt()
+            val versionToUse = if (currentVersion > requestedVersion) currentVersion else requestedVersion
             javaLauncher.set(javaToolchains.launcherFor {
-                languageVersion.set(
-                    JavaLanguageVersion.of((project.properties["testOnJava"] ?: "11").toString()))
+                languageVersion.set(JavaLanguageVersion.of(versionToUse))
             })
         }
     }
@@ -72,26 +82,6 @@ subprojects {
 
             trimTrailingWhitespace()
             endWithNewline()
-
-            // https://github.com/opensearch-project/opensearch-java/commit/2d6d5f86a8db9c7c9e7b8d0f54df97246f7b7d7e
-            // https://github.com/diffplug/spotless/issues/649
-            val wildcardImportRegex = Regex("""^import\s+(?:static\s+)?[^*\s]+\.\*;$""", RegexOption.MULTILINE)
-            custom("Refuse wildcard imports") { contents ->
-                // Wildcard imports can't be resolved by spotless itself.
-                // This will require the developer themselves to adhere to best practices.
-                val wildcardImports = wildcardImportRegex.findAll(contents)
-                if (wildcardImports.any()) {
-                    var msg = """
-                    Please replace the following wildcard imports with explicit imports ('spotlessApply' cannot resolve this issue):
-                """.trimIndent()
-                    wildcardImports.forEach {
-                        msg += "\n\t- ${it.value}"
-                    }
-                    msg += "\n"
-                    throw AssertionError(msg)
-                }
-                contents
-            }
         }
     }
 }
@@ -99,6 +89,9 @@ subprojects {
 subprojects.filter { listOf("roaringbitmap", "bsi").contains(it.name) }.forEach { project ->
     project.run {
         apply(plugin = "maven-publish")
+        if (rootProject.providers.gradleProperty("signingKey").isPresent) {
+            apply(plugin = "signing")
+        }
         configure<JavaPluginExtension> {
             withSourcesJar()
             withJavadocJar()
@@ -108,7 +101,7 @@ subprojects.filter { listOf("roaringbitmap", "bsi").contains(it.name) }.forEach 
             publications {
                 register<MavenPublication>("sonatype") {
                     groupId = project.group.toString()
-                    artifactId = project.name
+                    artifactId = if (project.name == "roaringbitmap") "RoaringBitmap" else project.name
                     version = project.version.toString()
 
                     from(components["java"])
@@ -116,7 +109,7 @@ subprojects.filter { listOf("roaringbitmap", "bsi").contains(it.name) }.forEach 
                     // requirements for maven central
                     // https://central.sonatype.org/pages/requirements.html
                     pom {
-                        name.set("${project.group}:${project.name}")
+                        name.set("$groupId:$artifactId")
                         description.set("Roaring bitmaps are compressed bitmaps (also called bitsets) which tend to outperform conventional compressed bitmaps such as WAH or Concise.")
                         url.set("https://github.com/RoaringBitmap/RoaringBitmap")
                         issueManagement {
@@ -150,12 +143,23 @@ subprojects.filter { listOf("roaringbitmap", "bsi").contains(it.name) }.forEach 
                 }
             }
 
+            val signingKey = rootProject.providers.gradleProperty("signingKey")
+            if (signingKey.isPresent) {
+                signing {
+                    useInMemoryPgpKeys(
+                        rootProject.providers.gradleProperty("signingKey").orNull,
+                        rootProject.providers.gradleProperty("signingPassword").orNull
+                    )
+                    sign(publishing.publications["sonatype"])
+                }
+            }
+
              // A safe throw-away place to publish to:
             // ./gradlew publishSonatypePublicationToLocalDebugRepository -Pversion=foo
             repositories {
                 maven {
                     name = "localDebug"
-                    url = project.buildDir.toPath().resolve("repos").resolve("localDebug").toUri()
+                    url = project.layout.buildDirectory.dir("repos/localDebug").get().asFile.toURI()
                 }
             }
 
@@ -183,3 +187,18 @@ release {
     tagTemplate = "\$version"
 }
 	
+
+nmcpAggregation {
+  allowDuplicateProjectNames.set(true)
+  centralPortal {
+    username = providers.gradleProperty("sonatypeUsername")
+    password = providers.gradleProperty("sonatypePassword")
+    publishingType = providers.environmentVariable("CI")
+      .map { "AUTOMATIC" }
+      .orElse("USER_MANAGED")
+    publishingTimeout = Duration.ofMinutes(120)
+    validationTimeout = Duration.ofMinutes(120)
+    publicationName = "${project.name}-$version"
+  }
+  publishAllProjectsProbablyBreakingProjectIsolation()
+}

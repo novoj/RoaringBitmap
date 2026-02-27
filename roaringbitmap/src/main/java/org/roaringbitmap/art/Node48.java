@@ -8,7 +8,7 @@ import java.nio.ByteOrder;
 import java.nio.LongBuffer;
 import java.util.Arrays;
 
-public class Node48 extends Node {
+public class Node48 extends BranchNode {
 
   // the actual byte value of childIndex content won't be beyond 48
   // 256 bytes packed into longs
@@ -22,8 +22,21 @@ public class Node48 extends Node {
   static final long INIT_LONG_VALUE = 0xFFffFFffFFffFFffL;
 
   public Node48(int compressedPrefixSize) {
-    super(NodeType.NODE48, compressedPrefixSize);
+    super(compressedPrefixSize);
     Arrays.fill(childIndex, INIT_LONG_VALUE);
+  }
+  @Override
+  protected Node48 clone() {
+    Node48 clone = new Node48(this.prefixLength());
+    System.arraycopy(this.childIndex,0,clone.childIndex,0,LONGS_USED);
+    postClone(clone, this.children, clone.children);
+    return clone;
+  }
+
+
+  @Override
+  protected NodeType nodeType() {
+    return NodeType.NODE48;
   }
 
   @Override
@@ -56,6 +69,13 @@ public class Node48 extends Node {
   public Node getChild(int pos) {
     byte idx = childrenIdx(pos, childIndex);
     return children[(int) idx];
+  }
+
+  @Override
+  public Node getChildAtKey(byte key) {
+    int unsignedIdx = Byte.toUnsignedInt(key);
+    int childIdx = childrenIdx(unsignedIdx, childIndex);
+    return (childIdx != EMPTY_VALUE) ? children[childIdx] : null;
   }
 
   @Override
@@ -168,39 +188,38 @@ public class Node48 extends Node {
   /**
    * insert a child node into the node48 node with the key byte
    *
-   * @param currentNode the node4
    * @param child the child node
    * @param key the key byte
    * @return the node48 or an adaptive generated node256
    */
-  public static Node insert(Node currentNode, Node child, byte key) {
-    Node48 node48 = (Node48) currentNode;
-    if (node48.count < 48) {
+  @Override
+  protected BranchNode insert(Node child, byte key) {
+    if (this.count < 48) {
       // insert leaf node into current node
-      int pos = node48.count;
-      if (node48.children[pos] != null) {
+      int pos = this.count;
+      if (this.children[pos] != null) {
         pos = 0;
-        while (node48.children[pos] != null) {
+        while (this.children[pos] != null) {
           pos++;
         }
       }
-      node48.children[pos] = child;
+      this.children[pos] = child;
       int unsignedByte = Byte.toUnsignedInt(key);
-      setOneByte(unsignedByte, (byte) pos, node48.childIndex);
-      node48.count++;
-      return node48;
+      setOneByte(unsignedByte, (byte) pos, this.childIndex);
+      this.count++;
+      return this;
     } else {
       // grow to Node256
-      Node256 node256 = new Node256(node48.prefixLength);
+      Node256 node256 = new Node256(this.prefixLength());
       int currentPos = ILLEGAL_IDX;
-      while ((currentPos = node48.getNextLargerPos(currentPos)) != ILLEGAL_IDX) {
-        Node childNode = node48.getChild(currentPos);
+      while ((currentPos = this.getNextLargerPos(currentPos)) != ILLEGAL_IDX) {
+        Node childNode = this.getChild(currentPos);
         node256.children[currentPos] = childNode;
         Node256.setBit((byte) currentPos, node256.bitmapMask);
       }
-      node256.count = node48.count;
-      copyPrefix(node48, node256);
-      Node freshOne = Node256.insert(node256, child, key);
+      node256.count = this.count;
+      copyPrefix(this, node256);
+      BranchNode freshOne = node256.insert(child, key);
       return freshOne;
     }
   }
@@ -213,7 +232,7 @@ public class Node48 extends Node {
     count--;
     if (count <= 12) {
       // shrink to node16
-      Node16 node16 = new Node16(this.prefixLength);
+      Node16 node16 = new Node16(this.prefixLength());
       int j = 0;
       ByteBuffer byteBuffer = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN);
       int currentPos = ILLEGAL_IDX;

@@ -19,6 +19,7 @@ RoaringBitmap
 - [Kryo](#kryo)
 - [64-bit integers (long)](#64-bit-integers-long)
 - [Range Bitmaps](#range-bitmaps)
+- [COW Roaring Bitmaps](#copy-on-write-roaringbitmaps)
 - [Prerequisites](#prerequisites)
 - [Usage for RoaringBitmap Developers](#usage-for-roaringbitmap-developers)
 - [IntelliJ and Eclipse](#intellij-and-eclipse)
@@ -256,8 +257,8 @@ Add the following dependency to your pom.xml file...
 ```xml
 <dependency>
     <groupId>com.github.RoaringBitmap.RoaringBitmap</groupId>
-    <artifactId>roaringbitmap</artifactId>
-    <version>1.3.16</version>
+    <artifactId>RoaringBitmap</artifactId>
+    <version>1.6.9</version>
 </dependency>
 ```
 
@@ -276,56 +277,26 @@ Then add the repository to your pom.xml file:
 See https://github.com/RoaringBitmap/JitPackRoaringBitmapProject for a complete example.
 
 
-### 2. Using GitHub Packages
+### 2. Using Maven Central 
 
 Add the following dependency to your `pom.xml` file inside the `<dependencies>` element...
 
 ```xml
+
 <dependency>
     <groupId>org.roaringbitmap</groupId>
-    <artifactId>roaringbitmap</artifactId>
-    <version>1.3.16</version>
+    <artifactId>RoaringBitmap</artifactId>
+    <version>1.6.9</version>
+</dependency>
+<dependency>
+    <groupId>org.roaringbitmap</groupId>
+    <artifactId>bsi</artifactId>
+    <version>1.6.9</version>
 </dependency>
 ```
 
-Add the GitHub repository inside the `<repositories>` element (`pom.xml` file)...
+See https://github.com/RoaringBitmap/CentralRoaringBitmapProject for a complete example.
 
-```xml
-<repositories>
-    <repository>
-        <id>github</id>
-        <name>Roaring Maven Packages</name>
-        <url>https://maven.pkg.github.com/RoaringBitmap/RoaringBitmap</url>
-        <releases><enabled>true</enabled></releases>
-        <snapshots><enabled>true</enabled></snapshots>
-    </repository>
-</repositories>
-```
-
-See https://github.com/RoaringBitmap/MavenRoaringBitmapProject for a complete example.
-
-The registry access is is protected by an authorisation. So you have to add your GitHub credentials to your global settings.xml: `$HOME\.m2\settings.xml`.
-
-You will need a token which you can generate on GitHub.
-
-```
-GitHub > Settings > Developer Settings > Personal access tokens > Generate new token
-```
-
-The token needs the read:packages permission. The token identifier is a long string such as `ghp_ieOkN`.
-
-Put the following in your `settings.xml` file, within the `<servers>` element.
-
-```xml
-<server>
-  <id>github</id>
-  <username>lemire</username>
-  <password>ghp_ieOkN</password>
-</server>
-```
-
-Replace `lemire` by your GitHub username and `ghp_ieOkN` by the token identifier
-you just generated.
 
 Usage within a gradle project
 ------------------
@@ -340,7 +311,7 @@ plugins {
     id 'java'
 }
 
-group 'org.roaringbitmap' // name of your project
+group 'my.awesome.project' // name of your project
 version '1.0-SNAPSHOT' // version of your project
 
 repositories {
@@ -351,7 +322,7 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.github.RoaringBitmap.RoaringBitmap:roaringbitmap:1.3.16'
+    implementation 'org.roaringbitmap:RoaringBitmap:1.6.9'
     testImplementation 'junit:junit:3.8.1'
 }
 ```
@@ -360,63 +331,30 @@ dependencies {
 See https://github.com/RoaringBitmap/JitPackRoaringBitmapProject for a complete example.
 
 
-### 2. Using GitHub Packages
+### 2. Using  Maven Central 
 
-
-You first need your GitHub credentials. Go
-to 
-
-```
-GitHub > Settings > Developer Settings > Personal access tokens > Generate new token
-```
-
-And create a token with read:packages permission.
-
-If your GitHub user name is `lemire` and your GitHub personal token `ghp_ieOkN`,
-then you can set them using system variables. Under bash, you can do it like so:
-```
-export GITHUB_USER=lemire
-export GITHUB_PASSWORD=ghp_ieOkN
-```
-
-
-If you prefer you can write your GitHub credentials in your  gradle.properties
-file
-
-```
-# gradle.properties
-githubUser=lemire
-githubPassword=ghp_ieOkN
-```
-
-Then all you need is to edit your `build.gradle` file like so:
+All you need is to edit your `build.gradle` file like so:
 
 ```groovy
 plugins {
     id 'java'
 }
 
-group 'org.roaringbitmap' // name of your project
+group 'me.project' // name of your project
 version '1.0-SNAPSHOT' // version of your project
 
 repositories {
     mavenCentral()
-    maven {
-        url 'https://maven.pkg.github.com/RoaringBitmap/RoaringBitmap'
-        credentials {
-            username = System.properties['githubUser'] ?: System.env.GITHUB_USER
-            password = System.properties['githubPassword'] ?: System.env.GITHUB_PASSWORD
-        }
-    }
 }
 
 dependencies {
-    implementation 'org.roaringbitmap:roaringbitmap:1.3.16'
+    implementation 'org.roaringbitmap:RoaringBitmap:1.6.9'
+    implementation 'org.roaringbitmap:bsi:1.6.9'
     testImplementation 'junit:junit:3.8.1'
 }
 ```
 
-See https://github.com/RoaringBitmap/MavenRoaringBitmapProject for a complete example.
+See https://github.com/RoaringBitmap/CentralRoaringBitmapProject for a complete example.
 
 
 
@@ -652,9 +590,21 @@ ByteBuffer buffer = mapBuffer(appender.serializedSizeInBytes());
 appender.serialize(buffer);
 RangeBitmap bitmap = RangeBitmap.map(buffer);
 ```
-
 The serialization format uses little endian byte order.
 
+
+## Copy-on-Write RoaringBitmaps
+
+Enable memory-efficient bitmap modifications with `toMutableRoaringBitmapCopyOnWrite()`. Only copies containers when actually modified, reducing memory usage compared to traditional approaches while maintaining full mutability.
+```java
+// Convert ImmutableRoaringBitmap to mutable with minimal copying
+ImmutableRoaringBitmap immutable = new ImmutableRoaringBitmap(byteBuffer);
+CopyOnWriteRoaringBitmap cowBitmap = immutable.toMutableRoaringBitmapCopyOnWrite();
+
+// Modifications only copy containers when needed
+cowBitmap.add(newValue);    // Only copies affected containers
+cowBitmap.remove(oldValue); // Shares unchanged containers
+```
 Prerequisites
 -------------
 
@@ -763,7 +713,14 @@ If you have a bash shell, you can also run our script which automatically builds
 Mailing list/discussion group
 -----------------------------
 
-https://groups.google.com/forum/#!forum/roaringbitmaps
+https://groups.google.com/g/roaring-bitmaps
+
+Stars
+------
+
+
+[![Star History Chart](https://api.star-history.com/svg?repos=RoaringBitmap/RoaringBitmap&type=Date)](https://www.star-history.com/#RoaringBitmap/RoaringBitmap&Date)
+
 
 Funding
 ----------

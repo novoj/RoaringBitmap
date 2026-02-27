@@ -8,28 +8,41 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
-public class Node16 extends Node {
+public class Node16 extends BranchNode {
 
   long firstV = 0L;
   long secondV = 0L;
   Node[] children = new Node[16];
 
   public Node16(int compressionLength) {
-    super(NodeType.NODE16, compressionLength);
+    super(compressionLength);
+  }
+  @Override
+  protected Node16 clone() {
+    Node16 clone = new Node16(this.prefixLength());
+    clone.firstV = this.firstV;
+    clone.secondV = this.secondV;
+    postClone(clone, this.children, clone.children);
+    return clone;
+  }
+
+  @Override
+  protected NodeType nodeType() {
+    return NodeType.NODE16;
   }
 
   @Override
   public int getChildPos(byte k) {
     byte[] firstBytes = LongUtils.toBDBytes(firstV);
     if (count <= 8) {
-      return Node.binarySearch(firstBytes, 0, count, k);
+      return binarySearch(firstBytes, 0, count, k);
     } else {
-      int pos = Node.binarySearch(firstBytes, 0, 8, k);
+      int pos = binarySearch(firstBytes, 0, 8, k);
       if (pos != ILLEGAL_IDX) {
         return pos;
       } else {
         byte[] secondBytes = LongUtils.toBDBytes(secondV);
-        pos = Node.binarySearch(secondBytes, 0, (count - 8), k);
+        pos = binarySearch(secondBytes, 0, (count - 8), k);
         if (pos != ILLEGAL_IDX) {
           return 8 + pos;
         } else {
@@ -40,19 +53,25 @@ public class Node16 extends Node {
   }
 
   @Override
+  public Node getChildAtKey(byte key) {
+    int pos = getChildPos(key);
+    return (pos != ILLEGAL_IDX) ? children[pos] : null;
+  }
+
+  @Override
   public SearchResult getNearestChildPos(byte k) {
     byte[] firstBytes = LongUtils.toBDBytes(firstV);
     if (count <= 8) {
-      return Node.binarySearchWithResult(firstBytes, 0, count, k);
+      return binarySearchWithResult(firstBytes, 0, count, k);
     } else {
-      SearchResult firstResult = Node.binarySearchWithResult(firstBytes, 0, 8, k);
+      SearchResult firstResult = binarySearchWithResult(firstBytes, 0, 8, k);
       // given the values are "in order" if we found a match or a value larger than
       // the target we are done.
       if (firstResult.outcome == SearchResult.Outcome.FOUND || firstResult.hasNextLargerPos()) {
         return firstResult;
       } else {
         byte[] secondBytes = LongUtils.toBDBytes(secondV);
-        SearchResult secondResult = Node.binarySearchWithResult(secondBytes, 0, (count - 8), k);
+        SearchResult secondResult = binarySearchWithResult(secondBytes, 0, (count - 8), k);
 
         switch (secondResult.outcome) {
           case FOUND:
@@ -139,53 +158,52 @@ public class Node16 extends Node {
   /**
    * insert a child into the node with the key byte
    *
-   * @param node the node16 to insert into
    * @param child the child node to be inserted
    * @param key the key byte
    * @return the adaptive changed node of the parent node16
    */
-  public static Node insert(Node node, Node child, byte key) {
-    Node16 currentNode16 = (Node16) node;
-    if (currentNode16.count < 8) {
+  @Override
+  protected BranchNode insert(Node child, byte key) {
+    if (this.count < 8) {
       // first
-      byte[] bytes = LongUtils.toBDBytes(currentNode16.firstV);
-      bytes[currentNode16.count] = key;
-      currentNode16.children[currentNode16.count] = child;
-      sortSmallByteArray(bytes, currentNode16.children, 0, currentNode16.count);
-      currentNode16.count++;
-      currentNode16.firstV = LongUtils.fromBDBytes(bytes);
-      return currentNode16;
-    } else if (currentNode16.count < 16) {
+      byte[] bytes = LongUtils.toBDBytes(this.firstV);
+      bytes[this.count] = key;
+      this.children[this.count] = child;
+      sortSmallByteArray(bytes, this.children, 0, this.count);
+      this.count++;
+      this.firstV = LongUtils.fromBDBytes(bytes);
+      return this;
+    } else if (this.count < 16) {
       // second
       ByteBuffer byteBuffer = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN);
-      byteBuffer.putLong(currentNode16.firstV);
-      byteBuffer.putLong(currentNode16.secondV);
-      byteBuffer.put(currentNode16.count, key);
-      currentNode16.children[currentNode16.count] = child;
-      sortSmallByteArray(byteBuffer.array(), currentNode16.children, 0, currentNode16.count);
-      currentNode16.count++;
-      currentNode16.firstV = byteBuffer.getLong(0);
-      currentNode16.secondV = byteBuffer.getLong(8);
-      return currentNode16;
+      byteBuffer.putLong(this.firstV);
+      byteBuffer.putLong(this.secondV);
+      byteBuffer.put(this.count, key);
+      this.children[this.count] = child;
+      sortSmallByteArray(byteBuffer.array(), this.children, 0, this.count);
+      this.count++;
+      this.firstV = byteBuffer.getLong(0);
+      this.secondV = byteBuffer.getLong(8);
+      return this;
     } else {
-      Node48 node48 = new Node48(currentNode16.prefixLength);
+      Node48 node48 = new Node48(this.prefixLength());
       for (int i = 0; i < 8; i++) {
-        int unsignedIdx = Byte.toUnsignedInt((byte) (currentNode16.firstV >>> ((7 - i) << 3)));
+        int unsignedIdx = Byte.toUnsignedInt((byte) (this.firstV >>> ((7 - i) << 3)));
         // i won't be beyond 48
         Node48.setOneByte(unsignedIdx, (byte) i, node48.childIndex);
-        node48.children[i] = currentNode16.children[i];
+        node48.children[i] = this.children[i];
       }
-      byte[] secondBytes = LongUtils.toBDBytes(currentNode16.secondV);
-      for (int i = 8; i < currentNode16.count; i++) {
+      byte[] secondBytes = LongUtils.toBDBytes(this.secondV);
+      for (int i = 8; i < this.count; i++) {
         byte v = secondBytes[i - 8];
         int unsignedIdx = Byte.toUnsignedInt(v);
         // i won't be beyond 48
         Node48.setOneByte(unsignedIdx, (byte) i, node48.childIndex);
-        node48.children[i] = currentNode16.children[i];
+        node48.children[i] = this.children[i];
       }
-      copyPrefix(currentNode16, node48);
-      node48.count = currentNode16.count;
-      Node freshOne = Node48.insert(node48, child, key);
+      copyPrefix(this, node48);
+      node48.count = this.count;
+      BranchNode freshOne = node48.insert(child, key);
       return freshOne;
     }
   }
@@ -202,7 +220,7 @@ public class Node16 extends Node {
     count--;
     if (count <= 3) {
       // shrink to node4
-      Node4 node4 = new Node4(prefixLength);
+      Node4 node4 = new Node4(prefixLength());
       // copy the keys
       node4.key = (int) (firstV >> 32);
       System.arraycopy(children, 0, node4.children, 0, count);

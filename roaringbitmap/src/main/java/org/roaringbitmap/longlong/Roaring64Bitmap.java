@@ -783,7 +783,7 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
 
   @Override
   public boolean contains(long x) {
-    byte[] high = LongUtils.highPart(x);
+    long high = LongUtils.highPartOnly(x);
     ContainerWithIndex containerWithIdx = highLowContainer.searchContainer(high);
     if (containerWithIdx == null) {
       return false;
@@ -841,7 +841,7 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
 
   @Override
   public boolean isEmpty() {
-    return getLongCardinality() == 0L;
+    return highLowContainer.isEmpty();
   }
 
   @Override
@@ -910,6 +910,7 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
   public void deserialize(DataInput in) throws IOException {
     this.clear();
     highLowContainer.deserialize(in);
+    removeEmpty();
   }
 
   /**
@@ -926,6 +927,26 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
   public void deserialize(ByteBuffer in) throws IOException {
     this.clear();
     highLowContainer.deserialize(in);
+    removeEmpty();
+  }
+
+  /**
+   * Remove empty containers. It's an invariant that there should be no empty containers in the current implementation.
+   * However, it is possible that the serialized form may have come from another codebase (previous implementation or
+   * different language), so it is prudent to enforce.
+   */
+  private void removeEmpty() {
+    if (!highLowContainer.isEmpty()) {
+      KeyIterator keyIterator = highLowContainer.highKeyIterator();
+      while (keyIterator.hasNext()) {
+        keyIterator.next();
+        long containerIdx = keyIterator.currentContainerIdx();
+        Container container = highLowContainer.getContainer(containerIdx);
+        if (container.isEmpty()) {
+          keyIterator.remove();
+        }
+      }
+    }
   }
 
   @Override
@@ -1161,21 +1182,9 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
   // mainly used for benchmark
   @Override
   public Roaring64Bitmap clone() {
-    long sizeInBytesL = this.serializedSizeInBytes();
-    if (sizeInBytesL >= Integer.MAX_VALUE) {
-      throw new UnsupportedOperationException();
-    }
-    int sizeInBytesInt = (int) sizeInBytesL;
-    ByteBuffer byteBuffer = ByteBuffer.allocate(sizeInBytesInt).order(ByteOrder.LITTLE_ENDIAN);
-    try {
-      this.serialize(byteBuffer);
-      byteBuffer.flip();
-      Roaring64Bitmap freshOne = new Roaring64Bitmap();
-      freshOne.deserialize(byteBuffer);
-      return freshOne;
-    } catch (Exception e) {
-      throw new RuntimeException("fail to clone thorough the ser/deser", e);
-    }
+    Roaring64Bitmap result = new Roaring64Bitmap();
+    result.highLowContainer = this.highLowContainer.clone();
+    return result;
   }
 
   private abstract class PeekableIterator implements PeekableLongIterator {

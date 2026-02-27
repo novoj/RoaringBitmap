@@ -6,12 +6,16 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 public class LeafNode extends Node {
 
   // key are saved as the lazy expanding logic,here we only care about the
   // high 48 bit data,so only the high 48 bit is valuable
-  private long key;
+  // - the top 32 bits of these 48
+  private int keyHigh;
+  // - the lower 16 bits of these 48. we use a char as its unsigned 16 bits
+  private char keyLow;
   long containerIdx;
   public static final int LEAF_NODE_KEY_LENGTH_IN_BYTES = 6;
 
@@ -22,51 +26,62 @@ public class LeafNode extends Node {
    * @param containerIdx the corresponding container index
    */
   public LeafNode(byte[] key, long containerIdx) {
-    super(NodeType.LEAF_NODE, 0);
-    byte[] bytes = new byte[8];
-    System.arraycopy(key, 0, bytes, 0, LEAF_NODE_KEY_LENGTH_IN_BYTES);
-    this.key = LongUtils.fromBDBytes(bytes);
+    super();
+    setKeyFromShifted(LongUtils.fromKey(key));
     this.containerIdx = containerIdx;
   }
 
   /**
    * constructor
-   * @param key a long value ,only the high 48 bit is valuable
+   * @param key a long value,only the high 48 bit is valuable
    * @param containerIdx the corresponding container index
    */
   public LeafNode(long key, long containerIdx) {
-    super(NodeType.LEAF_NODE, 0);
-    this.key = key;
+    super();
+    setKeyFromShifted(key);
     this.containerIdx = containerIdx;
   }
 
   @Override
+  public LeafNode clone() {
+    return new LeafNode(getKey() << 16, containerIdx);
+  }
+
+  @Override
   public void serializeNodeBody(DataOutput dataOutput) throws IOException {
-    byte[] keyBytes = LongUtils.highPart(key);
-    dataOutput.write(keyBytes);
+    dataOutput.writeInt(keyHigh);
+    dataOutput.writeShort(keyLow);
     dataOutput.writeLong(Long.reverseBytes(containerIdx));
   }
 
   @Override
   public void serializeNodeBody(ByteBuffer byteBuffer) throws IOException {
-    byte[] keyBytes = LongUtils.highPart(key);
-    byteBuffer.put(keyBytes);
+    if (byteBuffer.order() == ByteOrder.BIG_ENDIAN) {
+      byteBuffer.putInt(keyHigh);
+      byteBuffer.putChar(keyLow);
+    } else {
+      byteBuffer.putInt(Integer.reverseBytes(keyHigh));
+      byteBuffer.putChar(Character.reverseBytes(keyLow));
+    }
     byteBuffer.putLong(containerIdx);
   }
 
   @Override
   public void deserializeNodeBody(DataInput dataInput) throws IOException {
-    byte[] longBytes = new byte[8];
-    dataInput.readFully(longBytes, 0, LEAF_NODE_KEY_LENGTH_IN_BYTES);
-    this.key = LongUtils.fromBDBytes(longBytes);
+    keyHigh = dataInput.readInt();
+    keyLow = dataInput.readChar();
     this.containerIdx = Long.reverseBytes(dataInput.readLong());
   }
 
   @Override
   public void deserializeNodeBody(ByteBuffer byteBuffer) throws IOException {
-    byte[] bytes = new byte[8];
-    byteBuffer.get(bytes, 0, 6);
-    this.key = LongUtils.fromBDBytes(bytes);
+    if (byteBuffer.order() == ByteOrder.BIG_ENDIAN) {
+      keyHigh = byteBuffer.getInt();
+      keyLow = byteBuffer.getChar();
+    } else {
+      keyHigh = Integer.reverseBytes(byteBuffer.getInt());
+      keyLow = Character.reverseBytes(byteBuffer.getChar());
+    }
     this.containerIdx = byteBuffer.getLong();
   }
 
@@ -75,70 +90,51 @@ public class LeafNode extends Node {
     return LEAF_NODE_KEY_LENGTH_IN_BYTES + 8;
   }
 
-  @Override
-  public int getChildPos(byte k) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public SearchResult getNearestChildPos(byte key) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public byte getChildKey(int pos) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Node getChild(int pos) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public void replaceNode(int pos, Node freshOne) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public int getMinPos() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public int getNextLargerPos(int pos) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public int getMaxPos() {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public int getNextSmallerPos(int pos) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public Node remove(int pos) {
-    throw new UnsupportedOperationException();
-  }
-
-  @Override
-  public void replaceChildren(Node[] children) {
-    throw new UnsupportedOperationException();
-  }
-
   public long getContainerIdx() {
     return containerIdx;
   }
 
   public byte[] getKeyBytes() {
-    return LongUtils.highPart(key);
+    return LongUtils.highPart(getKey() << 16);
   }
 
   public long getKey() {
-    return key >>> 16;
+    return (((long) keyHigh) & 0xFFFFFFFFL) << 16 | (((long) keyLow) & 0xFFFFL);
+  }
+
+  /**
+   * Sets the key from a long value, only the high 48 bits are used.
+   *
+   * @param key the long value representing the key
+   */
+  private void setKeyFromShifted(long key) {
+    this.keyHigh = (int) (key >> 32);
+    this.keyLow = (char) (key >> 16);
+  }
+
+  @Override
+  protected void serializeHeader(DataOutput dataOutput) throws IOException {
+    // first byte: node type
+    dataOutput.writeByte((byte) NodeType.LEAF_NODE.ordinal());
+    // non null object count
+    dataOutput.writeShort(0);
+    dataOutput.writeByte(0);
+  }
+
+  @Override
+  protected void serializeHeader(ByteBuffer byteBuffer) throws IOException {
+    byteBuffer.put((byte) NodeType.LEAF_NODE.ordinal());
+    byteBuffer.putShort((short) 0);
+    byteBuffer.put((byte) 0);
+  }
+
+  @Override
+  public String toString() {
+    return "LeafNode{"
+        + "key="
+        + Long.toHexString(getKey())
+        + ", containerIdx="
+        + containerIdx
+        + '}';
   }
 }

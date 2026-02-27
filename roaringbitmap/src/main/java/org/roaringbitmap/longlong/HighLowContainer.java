@@ -4,12 +4,12 @@ import static java.nio.ByteOrder.LITTLE_ENDIAN;
 
 import org.roaringbitmap.Container;
 import org.roaringbitmap.art.Art;
+import org.roaringbitmap.art.BranchNode;
 import org.roaringbitmap.art.ContainerIterator;
 import org.roaringbitmap.art.Containers;
 import org.roaringbitmap.art.KeyIterator;
 import org.roaringbitmap.art.LeafNode;
 import org.roaringbitmap.art.LeafNodeIterator;
-import org.roaringbitmap.art.Node;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -28,6 +28,13 @@ public class HighLowContainer {
     art = new Art();
     containers = new Containers();
   }
+  @Override
+  public HighLowContainer clone() {
+    HighLowContainer cloned = new HighLowContainer();
+    cloned.art = this.art.clone();
+    cloned.containers = this.containers.clone();
+    return cloned;
+  }
 
   public Container getContainer(long containerIdx) {
     return containers.getContainer(containerIdx);
@@ -39,6 +46,20 @@ public class HighLowContainer {
    * @return the container with the container index
    */
   public ContainerWithIndex searchContainer(byte[] highPart) {
+    long containerIdx = art.findByKey(highPart);
+    if (containerIdx < 0) {
+      return null;
+    } else {
+      Container container = containers.getContainer(containerIdx);
+      return new ContainerWithIndex(container, containerIdx);
+    }
+  }
+  /**
+   * search the container by the given 48 bit high part key
+   * @param highPart the 48 bit key array
+   * @return the container with the container index
+   */
+  public ContainerWithIndex searchContainer(long highPart) {
     long containerIdx = art.findByKey(highPart);
     if (containerIdx < 0) {
       return null;
@@ -64,7 +85,7 @@ public class HighLowContainer {
    */
   public void remove(byte[] highPart) {
     long containerIdx = art.remove(highPart);
-    if (containerIdx != Node.ILLEGAL_IDX) {
+    if (containerIdx != BranchNode.ILLEGAL_IDX) {
       containers.remove(containerIdx);
     }
   }

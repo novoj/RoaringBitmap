@@ -1133,18 +1133,30 @@ public class MutableRoaringBitmap extends ImmutableRoaringBitmap
    */
   public boolean checkedRemove(final int x) {
     final char hb = BufferUtil.highbits(x);
+    final char lb = BufferUtil.lowbits(x);
     final int i = highLowContainer.getIndex(hb);
     if (i < 0) {
       return false;
     }
+    boolean containerNotEmpty;
     MappeableContainer C = highLowContainer.getContainerAtIndex(i);
-    int oldcard = C.getCardinality();
-    C.remove(BufferUtil.lowbits(x));
-    int newcard = C.getCardinality();
-    if (newcard == oldcard) {
-      return false;
+    if (C instanceof MappeableRunContainer) {
+      if (C.contains(lb)) { // getCardinality() is costly for run container
+        C = C.remove(lb);
+        containerNotEmpty = !C.isEmpty();
+      } else {
+        return false;
+      }
+    } else {
+      int oldcard = C.getCardinality();
+      C = C.remove(lb);
+      int newcard = C.getCardinality();
+      if (newcard == oldcard) {
+        return false;
+      }
+      containerNotEmpty = newcard > 0;
     }
-    if (newcard > 0) {
+    if (containerNotEmpty) {
       ((MutableRoaringArray) highLowContainer).setContainerAtIndex(i, C);
     } else {
       ((MutableRoaringArray) highLowContainer).removeAtIndex(i);
