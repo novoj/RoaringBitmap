@@ -8,6 +8,9 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,7 +18,11 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Random;
+import java.util.stream.Stream;
 
 public class TestCopyOnWriteRoaringBitmapV2 {
 
@@ -2545,6 +2552,909 @@ public class TestCopyOnWriteRoaringBitmapV2 {
 
     assertArrayEquals(originalBefore, original.toArray(),
         "Original was corrupted by orNot on clone");
+  }
+
+  // =======================================================================
+  // Parameterized correctness: static ops match RoaringBitmap
+  // =======================================================================
+
+  static Stream<Arguments> bitmapPairs() {
+    return Stream.of(
+        // empty x empty
+        Arguments.of(new RoaringBitmap(), new RoaringBitmap(), "empty_x_empty"),
+        // empty x non-empty
+        Arguments.of(new RoaringBitmap(), RoaringBitmap.bitmapOf(1, 2, 3), "empty_x_small"),
+        // non-empty x empty
+        Arguments.of(RoaringBitmap.bitmapOf(1, 2, 3), new RoaringBitmap(), "small_x_empty"),
+        // same single container, sparse
+        Arguments.of(
+            RoaringBitmap.bitmapOf(1, 10, 100, 1000),
+            RoaringBitmap.bitmapOf(5, 50, 500, 5000),
+            "sparse_same_container"),
+        // same single container, identical
+        Arguments.of(
+            RoaringBitmap.bitmapOf(1, 2, 3),
+            RoaringBitmap.bitmapOf(1, 2, 3),
+            "identical_single"),
+        // dense single container (BitmapContainer)
+        Arguments.of(denseRange(0, 10000), denseRange(5000, 15000), "dense_overlap"),
+        // dense disjoint
+        Arguments.of(denseRange(0, 5000), denseRange(10000, 15000), "dense_disjoint"),
+        // run containers
+        Arguments.of(runBitmap(0, 1000), runBitmap(500, 1500), "run_overlap"),
+        // run disjoint
+        Arguments.of(runBitmap(0, 1000), runBitmap(2000, 3000), "run_disjoint"),
+        // multi-container overlapping
+        Arguments.of(
+            buildMultiContainerBitmap(0, 10, 42),
+            buildMultiContainerBitmap(5, 15, 99),
+            "multi_overlap"),
+        // multi-container disjoint
+        Arguments.of(
+            buildMultiContainerBitmap(0, 5, 42),
+            buildMultiContainerBitmap(5, 10, 99),
+            "multi_disjoint"),
+        // multi-container fully overlapping
+        Arguments.of(
+            buildMultiContainerBitmap(0, 10, 42),
+            buildMultiContainerBitmap(0, 10, 99),
+            "multi_full_overlap"),
+        // high unsigned keys
+        Arguments.of(
+            highKeyBitmap(0xFFF0, 0xFFF5, 42),
+            highKeyBitmap(0xFFF3, 0xFFF8, 99),
+            "high_keys"),
+        // mixed container types: sparse + dense
+        Arguments.of(
+            RoaringBitmap.bitmapOf(1, 100, 1000),
+            denseRange(0, 10000),
+            "sparse_x_dense"),
+        // mixed: dense + run
+        Arguments.of(denseRange(0, 5000), runBitmap(0, 10000), "dense_x_run"),
+        // single element per container, many containers
+        Arguments.of(
+            singleElementPerContainer(0, 20),
+            singleElementPerContainer(10, 30),
+            "single_per_container"),
+        // subset relationship
+        Arguments.of(
+            RoaringBitmap.bitmapOf(1, 2, 3, 4, 5),
+            RoaringBitmap.bitmapOf(2, 4),
+            "superset_x_subset")
+    );
+  }
+
+  @ParameterizedTest(name = "staticOr: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramStaticOrMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+    int[] aBefore = ca.toArray();
+    int[] bBefore = cb.toArray();
+
+    RoaringBitmap expected = RoaringBitmap.or(a, b);
+    CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.or(ca, cb);
+
+    assertArrayEquals(expected.toArray(), result.toArray(), "OR result mismatch");
+    assertEquals(expected.getCardinality(), result.getCardinality(), "OR cardinality mismatch");
+    assertArrayEquals(aBefore, ca.toArray(), "input a corrupted");
+    assertArrayEquals(bBefore, cb.toArray(), "input b corrupted");
+  }
+
+  @ParameterizedTest(name = "staticAnd: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramStaticAndMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    RoaringBitmap expected = RoaringBitmap.and(a, b);
+    CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.and(ca, cb);
+
+    assertArrayEquals(expected.toArray(), result.toArray(), "AND result mismatch");
+    assertEquals(expected.getCardinality(), result.getCardinality(), "AND cardinality mismatch");
+  }
+
+  @ParameterizedTest(name = "staticXor: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramStaticXorMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    RoaringBitmap expected = RoaringBitmap.xor(a, b);
+    CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.xor(ca, cb);
+
+    assertArrayEquals(expected.toArray(), result.toArray(), "XOR result mismatch");
+    assertEquals(expected.getCardinality(), result.getCardinality(), "XOR cardinality mismatch");
+  }
+
+  @ParameterizedTest(name = "staticAndNot: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramStaticAndNotMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    RoaringBitmap expected = RoaringBitmap.andNot(a, b);
+    CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.andNot(ca, cb);
+
+    assertArrayEquals(expected.toArray(), result.toArray(), "ANDNOT result mismatch");
+    assertEquals(expected.getCardinality(), result.getCardinality(), "ANDNOT cardinality mismatch");
+  }
+
+  // =======================================================================
+  // Parameterized correctness: in-place ops match RoaringBitmap
+  // =======================================================================
+
+  @ParameterizedTest(name = "inPlaceOr: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceOrMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    RoaringBitmap expected = a.clone();
+    expected.or(b);
+
+    CopyOnWriteRoaringBitmapV2 cow = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    cow.or(b);
+
+    assertArrayEquals(expected.toArray(), cow.toArray(), "in-place OR result mismatch");
+  }
+
+  @ParameterizedTest(name = "inPlaceAnd: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceAndMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    RoaringBitmap expected = a.clone();
+    expected.and(b);
+
+    CopyOnWriteRoaringBitmapV2 cow = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    cow.and(b);
+
+    assertArrayEquals(expected.toArray(), cow.toArray(), "in-place AND result mismatch");
+  }
+
+  @ParameterizedTest(name = "inPlaceXor: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceXorMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    RoaringBitmap expected = a.clone();
+    expected.xor(b);
+
+    CopyOnWriteRoaringBitmapV2 cow = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    cow.xor(b);
+
+    assertArrayEquals(expected.toArray(), cow.toArray(), "in-place XOR result mismatch");
+  }
+
+  @ParameterizedTest(name = "inPlaceAndNot: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceAndNotMatchesRoaringBitmap(RoaringBitmap a, RoaringBitmap b, String desc) {
+    RoaringBitmap expected = a.clone();
+    expected.andNot(b);
+
+    CopyOnWriteRoaringBitmapV2 cow = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    cow.andNot(b);
+
+    assertArrayEquals(expected.toArray(), cow.toArray(), "in-place ANDNOT result mismatch");
+  }
+
+  // =======================================================================
+  // Parameterized: in-place ops on SHARED (cloned) bitmaps + isolation
+  // =======================================================================
+
+  @ParameterizedTest(name = "inPlaceOrSharedIsolation: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceOrOnSharedDoesNotCorrupt(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 original = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cow = original.clone();
+    int[] originalBefore = original.toArray();
+
+    RoaringBitmap expected = a.clone();
+    expected.or(b);
+
+    cow.or(b);
+
+    assertArrayEquals(expected.toArray(), cow.toArray(), "in-place OR result mismatch");
+    assertArrayEquals(originalBefore, original.toArray(), "original corrupted by in-place OR");
+  }
+
+  @ParameterizedTest(name = "inPlaceAndSharedIsolation: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceAndOnSharedDoesNotCorrupt(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 original = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cow = original.clone();
+    int[] originalBefore = original.toArray();
+
+    cow.and(b);
+
+    assertArrayEquals(originalBefore, original.toArray(), "original corrupted by in-place AND");
+  }
+
+  @ParameterizedTest(name = "inPlaceXorSharedIsolation: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceXorOnSharedDoesNotCorrupt(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 original = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cow = original.clone();
+    int[] originalBefore = original.toArray();
+
+    cow.xor(b);
+
+    assertArrayEquals(originalBefore, original.toArray(), "original corrupted by in-place XOR");
+  }
+
+  @ParameterizedTest(name = "inPlaceAndNotSharedIsolation: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInPlaceAndNotOnSharedDoesNotCorrupt(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 original = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cow = original.clone();
+    int[] originalBefore = original.toArray();
+
+    cow.andNot(b);
+
+    assertArrayEquals(originalBefore, original.toArray(),
+        "original corrupted by in-place ANDNOT");
+  }
+
+  // =======================================================================
+  // Parameterized: commutativity
+  // =======================================================================
+
+  @ParameterizedTest(name = "orCommutativity: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramOrIsCommutative(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    CopyOnWriteRoaringBitmapV2 ab = CopyOnWriteRoaringBitmapV2.or(ca, cb);
+    CopyOnWriteRoaringBitmapV2 ba = CopyOnWriteRoaringBitmapV2.or(cb, ca);
+
+    assertArrayEquals(ab.toArray(), ba.toArray(), "or(a,b) != or(b,a)");
+  }
+
+  @ParameterizedTest(name = "andCommutativity: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramAndIsCommutative(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    CopyOnWriteRoaringBitmapV2 ab = CopyOnWriteRoaringBitmapV2.and(ca, cb);
+    CopyOnWriteRoaringBitmapV2 ba = CopyOnWriteRoaringBitmapV2.and(cb, ca);
+
+    assertArrayEquals(ab.toArray(), ba.toArray(), "and(a,b) != and(b,a)");
+  }
+
+  @ParameterizedTest(name = "xorCommutativity: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramXorIsCommutative(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    CopyOnWriteRoaringBitmapV2 ab = CopyOnWriteRoaringBitmapV2.xor(ca, cb);
+    CopyOnWriteRoaringBitmapV2 ba = CopyOnWriteRoaringBitmapV2.xor(cb, ca);
+
+    assertArrayEquals(ab.toArray(), ba.toArray(), "xor(a,b) != xor(b,a)");
+  }
+
+  // =======================================================================
+  // Parameterized: cardinality operations match RoaringBitmap
+  // =======================================================================
+
+  @ParameterizedTest(name = "cardinalityOps: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramCardinalityOpsMatchRoaringBitmap(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    assertEquals(RoaringBitmap.andCardinality(a, b),
+        RoaringBitmap.andCardinality(ca, cb), "andCardinality mismatch");
+    assertEquals(RoaringBitmap.orCardinality(a, b),
+        RoaringBitmap.orCardinality(ca, cb), "orCardinality mismatch");
+    assertEquals(RoaringBitmap.xorCardinality(a, b),
+        RoaringBitmap.xorCardinality(ca, cb), "xorCardinality mismatch");
+    assertEquals(RoaringBitmap.andNotCardinality(a, b),
+        RoaringBitmap.andNotCardinality(ca, cb), "andNotCardinality mismatch");
+    assertEquals(RoaringBitmap.intersects(a, b),
+        RoaringBitmap.intersects(ca, cb), "intersects mismatch");
+  }
+
+  // =======================================================================
+  // Parameterized: query methods (contains, select, rank, iterator)
+  // =======================================================================
+
+  @ParameterizedTest(name = "queryMethods: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramQueryMethodsMatchAfterStaticOr(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    RoaringBitmap expected = RoaringBitmap.or(a, b);
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+    CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.or(ca, cb);
+
+    // cardinality
+    assertEquals(expected.getCardinality(), result.getCardinality(), "cardinality mismatch");
+    assertEquals(expected.getLongCardinality(), result.getLongCardinality(),
+        "longCardinality mismatch");
+    assertEquals(expected.isEmpty(), result.isEmpty(), "isEmpty mismatch");
+
+    // contains
+    int[] expectedArr = expected.toArray();
+    for (int val : expectedArr) {
+      assertTrue(result.contains(val), "missing value " + val);
+    }
+    // contains for values NOT in the bitmap
+    int[] resultArr = result.toArray();
+    if (resultArr.length > 0) {
+      // Check a value just before the first and after the last
+      int first = resultArr[0];
+      if (first > 0) {
+        assertEquals(expected.contains(first - 1), result.contains(first - 1));
+      }
+    }
+
+    // first/last
+    if (!expected.isEmpty()) {
+      assertEquals(expected.first(), result.first(), "first() mismatch");
+      assertEquals(expected.last(), result.last(), "last() mismatch");
+    }
+
+    // iterator consistency
+    List<Integer> iterValues = new ArrayList<>();
+    Iterator<Integer> it = result.iterator();
+    while (it.hasNext()) {
+      iterValues.add(it.next());
+    }
+    assertEquals(expectedArr.length, iterValues.size(), "iterator size mismatch");
+    for (int i = 0; i < expectedArr.length; i++) {
+      assertEquals(expectedArr[i], iterValues.get(i).intValue(),
+          "iterator value mismatch at index " + i);
+    }
+
+    // select + rank for a few positions
+    if (expectedArr.length > 0) {
+      int[] positions = {0, expectedArr.length / 4, expectedArr.length / 2,
+          3 * expectedArr.length / 4, expectedArr.length - 1};
+      for (int pos : positions) {
+        if (pos >= 0 && pos < expectedArr.length) {
+          assertEquals(expected.select(pos), result.select(pos),
+              "select(" + pos + ") mismatch");
+          int val = expectedArr[pos];
+          assertEquals(expected.rank(val), result.rank(val),
+              "rank(" + val + ") mismatch");
+        }
+      }
+    }
+  }
+
+  // =======================================================================
+  // Parameterized: andNot(a,b) == and(a, xor(a,b)) ∩ a  (set identity)
+  // Actually: andNot(a,b) == xor(a, and(a,b))
+  // =======================================================================
+
+  @ParameterizedTest(name = "andNotIdentity: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramAndNotEqualsXorOfAAndIntersection(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    // andNot(a, b)
+    CopyOnWriteRoaringBitmapV2 andNot = CopyOnWriteRoaringBitmapV2.andNot(ca, cb);
+
+    // xor(a, and(a, b)) should equal andNot(a, b)
+    CopyOnWriteRoaringBitmapV2 intersection = CopyOnWriteRoaringBitmapV2.and(ca, cb);
+    CopyOnWriteRoaringBitmapV2 xorResult = CopyOnWriteRoaringBitmapV2.xor(ca, intersection);
+
+    assertArrayEquals(andNot.toArray(), xorResult.toArray(),
+        "andNot(a,b) != xor(a, and(a,b))");
+  }
+
+  // =======================================================================
+  // Parameterized: or(a,b) == xor(a,b) | and(a,b)  (disjoint union + intersection)
+  // =======================================================================
+
+  @ParameterizedTest(name = "orDecomposition: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramOrEqualsXorUnionAnd(RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    CopyOnWriteRoaringBitmapV2 orResult = CopyOnWriteRoaringBitmapV2.or(ca, cb);
+
+    CopyOnWriteRoaringBitmapV2 xorResult = CopyOnWriteRoaringBitmapV2.xor(ca, cb);
+    CopyOnWriteRoaringBitmapV2 andResult = CopyOnWriteRoaringBitmapV2.and(ca, cb);
+    CopyOnWriteRoaringBitmapV2 reconstructed = CopyOnWriteRoaringBitmapV2.or(xorResult, andResult);
+
+    assertArrayEquals(orResult.toArray(), reconstructed.toArray(),
+        "or(a,b) != or(xor(a,b), and(a,b))");
+  }
+
+  // =======================================================================
+  // Parameterized: cardinality identity |A ∪ B| = |A| + |B| - |A ∩ B|
+  // =======================================================================
+
+  @ParameterizedTest(name = "inclusionExclusion: {2}")
+  @MethodSource("bitmapPairs")
+  public void paramInclusionExclusionPrinciple(
+      RoaringBitmap a, RoaringBitmap b, String desc) {
+    CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(a);
+    CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(b);
+
+    long orCard = CopyOnWriteRoaringBitmapV2.or(ca, cb).getLongCardinality();
+    long aCard = ca.getLongCardinality();
+    long bCard = cb.getLongCardinality();
+    long andCard = CopyOnWriteRoaringBitmapV2.and(ca, cb).getLongCardinality();
+
+    assertEquals(aCard + bCard - andCard, orCard,
+        "|A∪B| != |A| + |B| - |A∩B|");
+  }
+
+  // =======================================================================
+  // Enhanced fuzz test: all in-place ops including xor, andNot, lazyor, addN
+  // =======================================================================
+
+  @ParameterizedTest(name = "comprehensiveFuzz_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzComprehensiveOpsMatchRoaringBitmap(long seed) {
+    Random rng = new Random(seed);
+    RoaringBitmap reference = new RoaringBitmap();
+    CopyOnWriteRoaringBitmapV2 cow = new CopyOnWriteRoaringBitmapV2();
+
+    for (int iter = 0; iter < 1000; iter++) {
+      int op = rng.nextInt(14);
+      switch (op) {
+        case 0: { // add single
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          reference.add(val);
+          cow.add(val);
+          break;
+        }
+        case 1: { // remove single
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          reference.remove(val);
+          cow.remove(val);
+          break;
+        }
+        case 2: { // flip single
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          reference.flip(val);
+          cow.flip(val);
+          break;
+        }
+        case 3: { // checkedAdd
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          boolean refR = reference.checkedAdd(val);
+          boolean cowR = cow.checkedAdd(val);
+          assertEquals(refR, cowR, "checkedAdd mismatch at iter " + iter);
+          break;
+        }
+        case 4: { // checkedRemove
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          boolean refR = reference.checkedRemove(val);
+          boolean cowR = cow.checkedRemove(val);
+          assertEquals(refR, cowR, "checkedRemove mismatch at iter " + iter);
+          break;
+        }
+        case 5: { // range add
+          int key = rng.nextInt(8);
+          long start = ((long) key << 16) + rng.nextInt(500);
+          long end = start + rng.nextInt(500);
+          reference.add(start, end);
+          cow.add(start, end);
+          break;
+        }
+        case 6: { // range remove
+          int key = rng.nextInt(8);
+          long start = ((long) key << 16) + rng.nextInt(500);
+          long end = start + rng.nextInt(500);
+          reference.remove(start, end);
+          cow.remove(start, end);
+          break;
+        }
+        case 7: { // range flip
+          int key = rng.nextInt(8);
+          long start = ((long) key << 16) + rng.nextInt(500);
+          long end = start + rng.nextInt(500);
+          reference.flip(start, end);
+          cow.flip(start, end);
+          break;
+        }
+        case 8: { // in-place OR
+          RoaringBitmap extra = randomSmallBitmap(rng);
+          reference.or(extra);
+          cow.or(extra);
+          break;
+        }
+        case 9: { // in-place AND
+          RoaringBitmap mask = randomSmallBitmap(rng);
+          reference.and(mask);
+          cow.and(mask);
+          break;
+        }
+        case 10: { // in-place XOR
+          RoaringBitmap mask = randomSmallBitmap(rng);
+          reference.xor(mask);
+          cow.xor(mask);
+          break;
+        }
+        case 11: { // in-place ANDNOT
+          RoaringBitmap mask = randomSmallBitmap(rng);
+          reference.andNot(mask);
+          cow.andNot(mask);
+          break;
+        }
+        case 12: { // addN
+          int count = rng.nextInt(20) + 1;
+          int[] dat = new int[count];
+          for (int j = 0; j < count; j++) {
+            dat[j] = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          }
+          // addN requires sorted input
+          java.util.Arrays.sort(dat);
+          reference.addN(dat, 0, dat.length);
+          cow.addN(dat, 0, dat.length);
+          break;
+        }
+        case 13: { // clone + mutate (COW stress)
+          CopyOnWriteRoaringBitmapV2 snapshot = cow.clone();
+          int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+          reference.add(val);
+          cow.add(val);
+          // snapshot should be unaffected (not checked here, just exercises COW paths)
+          break;
+        }
+      }
+      assertArrayEquals(reference.toArray(), cow.toArray(),
+          "Mismatch after op " + op + " at iteration " + iter + " (seed=" + seed + ")");
+    }
+  }
+
+  // =======================================================================
+  // Fuzz test: operations on shared bitmaps (static op result + in-place)
+  // =======================================================================
+
+  @ParameterizedTest(name = "fuzzSharedOps_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzInPlaceOpsOnSharedBitmapIsolation(long seed) {
+    Random rng = new Random(seed);
+
+    for (int trial = 0; trial < 50; trial++) {
+      RoaringBitmap rbA = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbB = randomMultiContainerBitmap(rng);
+
+      CopyOnWriteRoaringBitmapV2 cowA = CopyOnWriteRoaringBitmapV2.fromBitmap(rbA);
+      CopyOnWriteRoaringBitmapV2 cowB = CopyOnWriteRoaringBitmapV2.fromBitmap(rbB);
+
+      // Create shared result via static OR
+      CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.or(cowA, cowB);
+      int[] aOriginal = cowA.toArray();
+      int[] bOriginal = cowB.toArray();
+
+      RoaringBitmap extra = randomSmallBitmap(rng);
+      RoaringBitmap refResult = RoaringBitmap.or(rbA, rbB);
+
+      // Pick a random in-place op
+      int op = rng.nextInt(4);
+      switch (op) {
+        case 0:
+          refResult.or(extra);
+          result.or(extra);
+          break;
+        case 1:
+          refResult.and(extra);
+          result.and(extra);
+          break;
+        case 2:
+          refResult.xor(extra);
+          result.xor(extra);
+          break;
+        case 3:
+          refResult.andNot(extra);
+          result.andNot(extra);
+          break;
+      }
+
+      assertArrayEquals(refResult.toArray(), result.toArray(),
+          "Result mismatch at trial " + trial + " op " + op + " (seed=" + seed + ")");
+      assertArrayEquals(aOriginal, cowA.toArray(),
+          "cowA corrupted at trial " + trial + " (seed=" + seed + ")");
+      assertArrayEquals(bOriginal, cowB.toArray(),
+          "cowB corrupted at trial " + trial + " (seed=" + seed + ")");
+    }
+  }
+
+  // =======================================================================
+  // Fuzz test: query methods consistency after random ops
+  // =======================================================================
+
+  @ParameterizedTest(name = "fuzzQueryConsistency_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzQueryMethodsMatchRoaringBitmapAfterRandomOps(long seed) {
+    Random rng = new Random(seed);
+    RoaringBitmap reference = new RoaringBitmap();
+    CopyOnWriteRoaringBitmapV2 cow = new CopyOnWriteRoaringBitmapV2();
+
+    // Build up bitmaps with random ops
+    for (int i = 0; i < 500; i++) {
+      int op = rng.nextInt(6);
+      int val = rng.nextInt(8) << 16 | rng.nextInt(2000);
+      switch (op) {
+        case 0: reference.add(val); cow.add(val); break;
+        case 1: reference.remove(val); cow.remove(val); break;
+        case 2: reference.flip(val); cow.flip(val); break;
+        case 3: {
+          RoaringBitmap extra = randomSmallBitmap(rng);
+          reference.or(extra); cow.or(extra);
+          break;
+        }
+        case 4: {
+          RoaringBitmap mask = randomSmallBitmap(rng);
+          reference.and(mask); cow.and(mask);
+          break;
+        }
+        case 5: {
+          RoaringBitmap mask = randomSmallBitmap(rng);
+          reference.xor(mask); cow.xor(mask);
+          break;
+        }
+      }
+    }
+
+    // Verify all query methods
+    assertArrayEquals(reference.toArray(), cow.toArray(), "toArray mismatch");
+    assertEquals(reference.getCardinality(), cow.getCardinality(), "cardinality mismatch");
+    assertEquals(reference.isEmpty(), cow.isEmpty(), "isEmpty mismatch");
+
+    // contains for random probes
+    for (int i = 0; i < 200; i++) {
+      int probe = rng.nextInt(8) << 16 | rng.nextInt(2000);
+      assertEquals(reference.contains(probe), cow.contains(probe),
+          "contains(" + probe + ") mismatch");
+    }
+
+    // first/last
+    if (!reference.isEmpty()) {
+      assertEquals(reference.first(), cow.first(), "first mismatch");
+      assertEquals(reference.last(), cow.last(), "last mismatch");
+    }
+
+    // select + rank
+    int[] refArr = reference.toArray();
+    if (refArr.length > 0) {
+      for (int i = 0; i < Math.min(50, refArr.length); i++) {
+        int pos = rng.nextInt(refArr.length);
+        assertEquals(reference.select(pos), cow.select(pos), "select(" + pos + ") mismatch");
+      }
+      for (int i = 0; i < 50; i++) {
+        int probe = rng.nextInt(8) << 16 | rng.nextInt(2000);
+        assertEquals(reference.rank(probe), cow.rank(probe), "rank(" + probe + ") mismatch");
+      }
+    }
+
+    // nextValue / previousValue
+    for (int i = 0; i < 50; i++) {
+      int fromValue = rng.nextInt(8) << 16 | rng.nextInt(2000);
+      assertEquals(reference.nextValue(fromValue), cow.nextValue(fromValue),
+          "nextValue(" + fromValue + ") mismatch");
+      assertEquals(reference.previousValue(fromValue), cow.previousValue(fromValue),
+          "previousValue(" + fromValue + ") mismatch");
+    }
+
+    // iterator
+    Iterator<Integer> refIt = reference.iterator();
+    Iterator<Integer> cowIt = cow.iterator();
+    while (refIt.hasNext()) {
+      assertTrue(cowIt.hasNext(), "cow iterator ended early");
+      assertEquals(refIt.next(), cowIt.next(), "iterator value mismatch");
+    }
+    assertFalse(cowIt.hasNext(), "cow iterator has extra values");
+  }
+
+  // =======================================================================
+  // Fuzz test: chained static ops (associativity)
+  // =======================================================================
+
+  @ParameterizedTest(name = "fuzzAssociativity_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzStaticOrIsAssociative(long seed) {
+    Random rng = new Random(seed);
+
+    for (int trial = 0; trial < 30; trial++) {
+      RoaringBitmap rbA = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbB = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbC = randomMultiContainerBitmap(rng);
+
+      CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(rbA);
+      CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(rbB);
+      CopyOnWriteRoaringBitmapV2 cc = CopyOnWriteRoaringBitmapV2.fromBitmap(rbC);
+
+      // or(or(a,b), c) == or(a, or(b,c))
+      CopyOnWriteRoaringBitmapV2 left = CopyOnWriteRoaringBitmapV2.or(
+          CopyOnWriteRoaringBitmapV2.or(ca, cb), cc);
+      CopyOnWriteRoaringBitmapV2 right = CopyOnWriteRoaringBitmapV2.or(
+          ca, CopyOnWriteRoaringBitmapV2.or(cb, cc));
+
+      assertArrayEquals(left.toArray(), right.toArray(),
+          "or associativity failed at trial " + trial);
+    }
+  }
+
+  @ParameterizedTest(name = "fuzzAndAssociativity_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzStaticAndIsAssociative(long seed) {
+    Random rng = new Random(seed);
+
+    for (int trial = 0; trial < 30; trial++) {
+      RoaringBitmap rbA = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbB = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbC = randomMultiContainerBitmap(rng);
+
+      CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(rbA);
+      CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(rbB);
+      CopyOnWriteRoaringBitmapV2 cc = CopyOnWriteRoaringBitmapV2.fromBitmap(rbC);
+
+      CopyOnWriteRoaringBitmapV2 left = CopyOnWriteRoaringBitmapV2.and(
+          CopyOnWriteRoaringBitmapV2.and(ca, cb), cc);
+      CopyOnWriteRoaringBitmapV2 right = CopyOnWriteRoaringBitmapV2.and(
+          ca, CopyOnWriteRoaringBitmapV2.and(cb, cc));
+
+      assertArrayEquals(left.toArray(), right.toArray(),
+          "and associativity failed at trial " + trial);
+    }
+  }
+
+  // =======================================================================
+  // Fuzz test: COW clone isolation under random mixed ops
+  // =======================================================================
+
+  @ParameterizedTest(name = "fuzzCloneIsolation_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzCloneIsolationUnderMixedOps(long seed) {
+    Random rng = new Random(seed);
+
+    CopyOnWriteRoaringBitmapV2 original = CopyOnWriteRoaringBitmapV2.fromBitmap(
+        randomMultiContainerBitmap(rng));
+
+    for (int iter = 0; iter < 100; iter++) {
+      int[] originalBefore = original.toArray();
+      CopyOnWriteRoaringBitmapV2 cloned = original.clone();
+
+      // Apply random mutations to the clone
+      int numMutations = rng.nextInt(30) + 1;
+      for (int j = 0; j < numMutations; j++) {
+        int op = rng.nextInt(8);
+        switch (op) {
+          case 0: cloned.add(rng.nextInt(8) << 16 | rng.nextInt(2000)); break;
+          case 1: cloned.remove(rng.nextInt(8) << 16 | rng.nextInt(2000)); break;
+          case 2: cloned.flip(rng.nextInt(8) << 16 | rng.nextInt(2000)); break;
+          case 3: cloned.or(randomSmallBitmap(rng)); break;
+          case 4: cloned.and(randomSmallBitmap(rng)); break;
+          case 5: cloned.xor(randomSmallBitmap(rng)); break;
+          case 6: cloned.andNot(randomSmallBitmap(rng)); break;
+          case 7: {
+            int key = rng.nextInt(8);
+            long start = ((long) key << 16) + rng.nextInt(500);
+            long end = start + rng.nextInt(500);
+            cloned.add(start, end);
+            break;
+          }
+        }
+      }
+
+      assertArrayEquals(originalBefore, original.toArray(),
+          "Original corrupted at iteration " + iter + " (seed=" + seed + ")");
+    }
+  }
+
+  // =======================================================================
+  // Fuzz test: static ops on COW bitmaps that were themselves built via ops
+  // (multi-level sharing)
+  // =======================================================================
+
+  @ParameterizedTest(name = "fuzzMultiLevelSharing_seed={0}")
+  @MethodSource("fuzzSeeds")
+  public void fuzzMultiLevelSharingCorrectness(long seed) {
+    Random rng = new Random(seed);
+
+    for (int trial = 0; trial < 30; trial++) {
+      RoaringBitmap rbA = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbB = randomMultiContainerBitmap(rng);
+      RoaringBitmap rbC = randomMultiContainerBitmap(rng);
+
+      CopyOnWriteRoaringBitmapV2 ca = CopyOnWriteRoaringBitmapV2.fromBitmap(rbA);
+      CopyOnWriteRoaringBitmapV2 cb = CopyOnWriteRoaringBitmapV2.fromBitmap(rbB);
+      CopyOnWriteRoaringBitmapV2 cc = CopyOnWriteRoaringBitmapV2.fromBitmap(rbC);
+
+      // Build a result from static ops — containers are shared
+      CopyOnWriteRoaringBitmapV2 orAB = CopyOnWriteRoaringBitmapV2.or(ca, cb);
+      // Use the result of the first op as input to a second op
+      CopyOnWriteRoaringBitmapV2 result = CopyOnWriteRoaringBitmapV2.and(orAB, cc);
+
+      // Reference
+      RoaringBitmap refOrAB = RoaringBitmap.or(rbA, rbB);
+      RoaringBitmap refResult = RoaringBitmap.and(refOrAB, rbC);
+
+      assertArrayEquals(refResult.toArray(), result.toArray(),
+          "multi-level static op mismatch at trial " + trial);
+
+      // Now mutate result — all inputs must be unaffected
+      if (!result.isEmpty()) {
+        result.add(42);
+      }
+      int[] caCheck = ca.toArray();
+      int[] cbCheck = cb.toArray();
+      assertArrayEquals(rbA.toArray(), caCheck,
+          "ca corrupted after multi-level op + mutation at trial " + trial);
+      assertArrayEquals(rbB.toArray(), cbCheck,
+          "cb corrupted after multi-level op + mutation at trial " + trial);
+    }
+  }
+
+  // =======================================================================
+  // Helper: seed provider for parameterized fuzz tests
+  // =======================================================================
+
+  static Stream<Arguments> fuzzSeeds() {
+    return Stream.of(
+        Arguments.of(12345L),
+        Arguments.of(67890L),
+        Arguments.of(11111L),
+        Arguments.of(99999L),
+        Arguments.of(42L),
+        Arguments.of(0L),
+        Arguments.of(Long.MAX_VALUE),
+        Arguments.of(0xDEADBEEFL)
+    );
+  }
+
+  // =======================================================================
+  // Helpers for parameterized tests
+  // =======================================================================
+
+  private static RoaringBitmap denseRange(int start, int end) {
+    RoaringBitmap rb = new RoaringBitmap();
+    rb.add((long) start, (long) end);
+    return rb;
+  }
+
+  private static RoaringBitmap runBitmap(int start, int end) {
+    RoaringBitmap rb = new RoaringBitmap();
+    rb.add((long) start, (long) end);
+    rb.runOptimize();
+    return rb;
+  }
+
+  private static RoaringBitmap highKeyBitmap(int startKey, int endKey, int seed) {
+    Random random = new Random(seed);
+    RoaringBitmap rb = new RoaringBitmap();
+    for (int key = startKey; key < endKey; key++) {
+      int base = key << 16;
+      for (int j = 0; j < 200; j++) {
+        rb.add(base + random.nextInt(65536));
+      }
+    }
+    return rb;
+  }
+
+  private static RoaringBitmap singleElementPerContainer(int startKey, int endKey) {
+    RoaringBitmap rb = new RoaringBitmap();
+    for (int key = startKey; key < endKey; key++) {
+      rb.add(key << 16 | 1);
+    }
+    return rb;
+  }
+
+  private static RoaringBitmap randomSmallBitmap(Random rng) {
+    RoaringBitmap rb = new RoaringBitmap();
+    int count = rng.nextInt(50) + 1;
+    for (int j = 0; j < count; j++) {
+      rb.add(rng.nextInt(8) << 16 | rng.nextInt(2000));
+    }
+    return rb;
+  }
+
+  private static RoaringBitmap randomMultiContainerBitmap(Random rng) {
+    int startKey = rng.nextInt(5);
+    int endKey = startKey + rng.nextInt(5) + 1;
+    return buildMultiContainerBitmap(startKey, endKey, rng.nextInt(100000));
   }
 
   // -----------------------------------------------------------------------
