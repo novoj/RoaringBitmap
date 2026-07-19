@@ -157,11 +157,11 @@ public class RoaringBitmap
     }
   }
 
-  private final class RoaringReverseIntIterator implements IntIterator {
+  private final class RoaringReverseIntIterator implements PeekableIntIterator {
 
     int hs = 0;
 
-    CharIterator iter;
+    PeekableCharIterator iter;
 
     int pos = RoaringBitmap.this.highLowContainer.size() - 1;
 
@@ -170,7 +170,7 @@ public class RoaringBitmap
     }
 
     @Override
-    public IntIterator clone() {
+    public PeekableIntIterator clone() {
       try {
         RoaringReverseIntIterator clone = (RoaringReverseIntIterator) super.clone();
         if (this.iter != null) {
@@ -203,6 +203,27 @@ public class RoaringBitmap
             RoaringBitmap.this.highLowContainer.getContainerAtIndex(pos).getReverseCharIterator();
         hs = RoaringBitmap.this.highLowContainer.getKeyAtIndex(pos) << 16;
       }
+    }
+
+    @Override
+    public void advanceIfNeeded(int maxval) {
+      // In reverse order: skip while next value is strictly greater than maxval (unsigned).
+      while (hasNext() && ((hs >>> 16) > (maxval >>> 16))) {
+        --pos;
+        nextContainer();
+      }
+      if (hasNext() && ((hs >>> 16) == (maxval >>> 16))) {
+        iter.advanceIfNeeded(Util.lowbits(maxval));
+        if (!iter.hasNext()) {
+          --pos;
+          nextContainer();
+        }
+      }
+    }
+
+    @Override
+    public int peekNext() {
+      return (iter.peekNext()) | hs;
     }
   }
 
@@ -1591,7 +1612,7 @@ public class RoaringBitmap
             key == maxKey
                 ? x1.highLowContainer
                     .getContainerAtIndex(pos1)
-                    .ior(RunContainer.rangeOfOnes(0, lastRun))
+                    .or(RunContainer.rangeOfOnes(0, lastRun))
                 : RunContainer.full();
         ++pos1;
         s1 = pos1 < length1 ? x1.highLowContainer.getKeyAtIndex(pos1) : maxKey + 1;
@@ -2202,7 +2223,7 @@ public class RoaringBitmap
    * @return a custom iterator over set bits, the bits are traversed in descending sorted order
    */
   @Override
-  public IntIterator getReverseIntIterator() {
+  public PeekableIntIterator getReverseIntIterator() {
     return new RoaringReverseIntIterator();
   }
 
