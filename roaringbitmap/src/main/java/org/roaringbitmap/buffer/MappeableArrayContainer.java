@@ -1335,6 +1335,10 @@ public final class MappeableArrayContainer extends MappeableContainer implements
 
   @Override
   public int rank(char lowbits) {
+    // rank(Character.MAX_VALUE) is the full cardinality (see MappeableContainer.rank javadoc).
+    if (lowbits == Character.MAX_VALUE) {
+      return cardinality;
+    }
     int answer = BufferUtil.unsignedBinarySearch(content, 0, cardinality, lowbits);
     if (answer >= 0) {
       return answer + 1;
@@ -1925,7 +1929,10 @@ final class RawReverseArrayContainerCharIterator implements PeekableCharIterator
 
   @Override
   public void advanceIfNeeded(char maxval) {
-    pos = Util.reverseUntil(content, pos + 1, maxval);
+    // reverseUntil returns 0 both when index 0 is the answer and when nothing qualifies, so
+    // index 0 has to be re-checked: if it is still above maxval, this container is exhausted.
+    int candidate = Util.reverseUntil(content, pos + 1, maxval);
+    pos = (candidate == 0 && content[0] > maxval) ? -1 : candidate;
   }
 
   @Override
@@ -1978,7 +1985,10 @@ final class ReverseMappeableArrayContainerCharIterator implements PeekableCharIt
 
   @Override
   public void advanceIfNeeded(char maxval) {
-    pos = BufferUtil.reverseUntil(parent.content, pos + 1, maxval);
+    // reverseUntil returns 0 both when index 0 is the answer and when nothing qualifies, so
+    // index 0 has to be re-checked: if it is still above maxval, this container is exhausted.
+    int candidate = BufferUtil.reverseUntil(parent.content, pos + 1, maxval);
+    pos = (candidate == 0 && parent.content.get(0) > maxval) ? -1 : candidate;
   }
 
   @Override

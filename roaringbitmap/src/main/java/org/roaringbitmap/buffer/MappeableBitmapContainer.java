@@ -1565,6 +1565,14 @@ public final class MappeableBitmapContainer extends MappeableContainer implement
 
   @Override
   public int rank(char lowbits) {
+    // rank(Character.MAX_VALUE) is the full cardinality (see MappeableContainer.rank javadoc).
+    // Avoid scanning all 1024 words when the cached cardinality is available.
+    if (lowbits == Character.MAX_VALUE) {
+      if (cardinality < 0) {
+        computeCardinality();
+      }
+      return cardinality;
+    }
     int leftover = (lowbits + 1) & 63;
     int answer = 0;
     if (BufferUtil.isBackedBySimpleArray(this.bitmap)) {
@@ -2311,16 +2319,15 @@ final class ReverseMappeableBitmapContainerCharIterator implements PeekableCharI
       }
       long currentWord = parent.bitmap.get(x);
       currentWord &= ~0L >>> (63 - (maxval & 63));
-      if (x > 0) {
-        while (currentWord == 0) {
-          x--;
-          if (x == 0) {
-            break;
-          }
-          currentWord = parent.bitmap.get(x);
-        }
+      while (currentWord == 0 && x > 0) {
+        x--;
+        currentWord = parent.bitmap.get(x);
       }
       w = currentWord;
+      if (currentWord == 0) {
+        // no value at or below maxval in this container
+        x = -1;
+      }
     }
   }
 

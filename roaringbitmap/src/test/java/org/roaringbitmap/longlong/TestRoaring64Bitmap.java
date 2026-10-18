@@ -6,15 +6,19 @@ import static org.roaringbitmap.ValidationRangeConsumer.Value.ABSENT;
 import static org.roaringbitmap.ValidationRangeConsumer.Value.PRESENT;
 
 import org.roaringbitmap.RoaringBitmap;
+import org.roaringbitmap.TestAdversarialInputs;
 import org.roaringbitmap.ValidationRangeConsumer;
 import org.roaringbitmap.art.LeafNode;
 import org.roaringbitmap.art.LeafNodeIterator;
 
+import com.google.common.io.ByteStreams;
 import com.google.common.primitives.Ints;
 import com.google.common.primitives.Longs;
 import org.apache.commons.lang3.SerializationUtils;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -22,6 +26,26 @@ import java.nio.ByteOrder;
 import java.util.*;
 
 public class TestRoaring64Bitmap {
+
+  @ParameterizedTest
+  @ValueSource(longs = {0L, 1099511627776L, Long.MIN_VALUE})
+  public void testPortableRoundTripAfterRemoveChangesContainerType(long base) throws IOException {
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+    for (int i = 0; i < 4097; i++) {
+      bitmap.addLong(base + 2L * i);
+    }
+    bitmap.remove(base);
+    assertFalse(bitmap.contains(base));
+    assertEquals(4096, bitmap.getLongCardinality());
+
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    bitmap.serializePortable(new DataOutputStream(output));
+    Roaring64Bitmap restored = new Roaring64Bitmap();
+    restored.deserializePortable(
+        new DataInputStream(new ByteArrayInputStream(output.toByteArray())));
+
+    assertArrayEquals(bitmap.toArray(), restored.toArray());
+  }
 
   private Roaring64Bitmap newDefaultCtor() {
     return new Roaring64Bitmap();
@@ -151,6 +175,122 @@ public class TestRoaring64Bitmap {
     Roaring64Bitmap deserBBOne = new Roaring64Bitmap();
     deserBBOne.deserialize(byteBuffer);
     Assertions.assertEquals(select2, deserBBOne.select(2));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "/testdata/64mapempty.bin",
+        "/testdata/64map32bitvals.bin",
+        "/testdata/64mapspreadvals.bin",
+        "/testdata/64maphighvals.bin"
+      })
+  public void testPortableSerializationMatchesCRoaring(String resourceName) throws IOException {
+    byte[] reference = ByteStreams.toByteArray(TestAdversarialInputs.openInputstream(resourceName));
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+
+    bitmap.deserializePortable(new DataInputStream(new ByteArrayInputStream(reference)));
+
+    assertEquals(reference.length, bitmap.portableSerializedSizeInBytes());
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    bitmap.serializePortable(new DataOutputStream(output));
+    assertArrayEquals(reference, output.toByteArray());
+  }
+
+  @Test
+  public void testPortableDeserializationRejectsInvalidBucketCount() throws IOException {
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    new DataOutputStream(output).writeLong(Long.reverseBytes(1L << 32));
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+
+    assertThrows(
+        IOException.class,
+        () ->
+            bitmap.deserializePortable(
+                new DataInputStream(new ByteArrayInputStream(output.toByteArray()))));
+  }
+
+  @Test
+  public void testPortableDeserializationRejectsDuplicateContainerKeys() throws IOException {
+    RoaringBitmap lowBitmap = RoaringBitmap.bitmapOf(1, 1 << 16);
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    DataOutputStream dataOutput = new DataOutputStream(output);
+    dataOutput.writeLong(Long.reverseBytes(1));
+    dataOutput.writeInt(0);
+    lowBitmap.serialize(dataOutput);
+    byte[] bytes = output.toByteArray();
+    int secondContainerKeyOffset = 24;
+    ByteBuffer.wrap(bytes)
+        .order(ByteOrder.LITTLE_ENDIAN)
+        .putChar(secondContainerKeyOffset, (char) 0);
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+
+    assertThrows(
+        IOException.class,
+        () -> bitmap.deserializePortable(new DataInputStream(new ByteArrayInputStream(bytes))));
+  }
+
+  @Test
+  public void testPortableDeserializationRejectsDuplicateBucketKeys() throws IOException {
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    DataOutputStream dataOutput = new DataOutputStream(output);
+    dataOutput.writeLong(Long.reverseBytes(2));
+    dataOutput.writeInt(0);
+    new RoaringBitmap().serialize(dataOutput);
+    dataOutput.writeInt(0);
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+
+    assertThrows(
+        IOException.class,
+        () ->
+            bitmap.deserializePortable(
+                new DataInputStream(new ByteArrayInputStream(output.toByteArray()))));
+  }
+
+  @Test
+  public void testPortableSerializationMatchesNavigableMap() throws IOException {
+    Roaring64Bitmap bitmap = new Roaring64Bitmap();
+    Roaring64NavigableMap navigableMap = new Roaring64NavigableMap();
+    long runBase = 0x7FFFFFFFL << 32;
+    long bitmapBase = 0x80000000L << 32;
+    long arrayBase = 0xFFFFFFFFL << 32;
+    bitmap.addRange(runBase, runBase + 6000);
+    navigableMap.addRange(runBase, runBase + 6000);
+    for (int i = 0; i < 5000; i++) {
+      bitmap.addLong(bitmapBase + 2L * i);
+      navigableMap.addLong(bitmapBase + 2L * i);
+    }
+    for (int i = 0; i < 100; i++) {
+      bitmap.addLong(arrayBase + 100L * i);
+      navigableMap.addLong(arrayBase + 100L * i);
+    }
+    bitmap.runOptimize();
+    navigableMap.runOptimize();
+
+    ByteArrayOutputStream bitmapOutput = new ByteArrayOutputStream();
+    bitmap.serializePortable(new DataOutputStream(bitmapOutput));
+    ByteArrayOutputStream navigableOutput = new ByteArrayOutputStream();
+    navigableMap.serializePortable(new DataOutputStream(navigableOutput));
+
+    assertArrayEquals(navigableOutput.toByteArray(), bitmapOutput.toByteArray());
+    Roaring64Bitmap bitmapFromNavigable = new Roaring64Bitmap();
+    bitmapFromNavigable.deserializePortable(
+        new DataInputStream(new ByteArrayInputStream(navigableOutput.toByteArray())));
+    assertEquals(bitmap, bitmapFromNavigable);
+  }
+
+  @Test
+  public void testPortableDeserializationIsAtomicWhenTruncated() throws IOException {
+    Roaring64Bitmap source = Roaring64Bitmap.bitmapOf(1L, 1L << 32, -1L);
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    source.serializePortable(new DataOutputStream(output));
+    byte[] truncated = Arrays.copyOf(output.toByteArray(), output.size() - 1);
+    Roaring64Bitmap bitmap = Roaring64Bitmap.bitmapOf(42L);
+
+    assertThrows(
+        IOException.class,
+        () -> bitmap.deserializePortable(new DataInputStream(new ByteArrayInputStream(truncated))));
+    assertEquals(Roaring64Bitmap.bitmapOf(42L), bitmap);
   }
 
   @Test
@@ -859,6 +999,80 @@ public class TestRoaring64Bitmap {
 
     assertEquals(1, xorNotInPlace.getLongCardinality());
     assertEquals(123, xorNotInPlace.select(0));
+  }
+
+  @Test
+  public void testXorEmptiesFirstBucket() {
+    Roaring64Bitmap rechecked = newDefaultCtor();
+    rechecked.addLong(0L);
+    rechecked.addLong(65536L);
+
+    Roaring64Bitmap processed = newDefaultCtor();
+    processed.addLong(0L);
+
+    Roaring64Bitmap xorNotInPlace = Roaring64Bitmap.xor(rechecked, processed);
+    rechecked.xor(processed);
+
+    assertFalse(rechecked.isEmpty());
+    assertEquals(1, rechecked.getLongCardinality());
+    assertEquals(65536L, rechecked.first());
+    assertEquals(65536L, rechecked.last());
+
+    assertFalse(xorNotInPlace.isEmpty());
+    assertEquals(1, xorNotInPlace.getLongCardinality());
+    assertEquals(65536L, xorNotInPlace.first());
+    assertEquals(65536L, xorNotInPlace.last());
+  }
+
+  @Test
+  public void testXorEmptiesLastBucket() {
+    Roaring64Bitmap rechecked = newDefaultCtor();
+    rechecked.addLong(0L);
+    rechecked.addLong(65536L);
+
+    Roaring64Bitmap processed = newDefaultCtor();
+    processed.addLong(65536L);
+
+    Roaring64Bitmap xorNotInPlace = Roaring64Bitmap.xor(rechecked, processed);
+    rechecked.xor(processed);
+
+    assertFalse(rechecked.isEmpty());
+    assertEquals(1, rechecked.getLongCardinality());
+    assertEquals(0L, rechecked.first());
+    assertEquals(0L, rechecked.last());
+
+    assertFalse(xorNotInPlace.isEmpty());
+    assertEquals(1, xorNotInPlace.getLongCardinality());
+    assertEquals(0L, xorNotInPlace.first());
+    assertEquals(0L, xorNotInPlace.last());
+  }
+
+  @Test
+  public void testFlipEmptiesFirstBucket() {
+    Roaring64Bitmap bitmap = newDefaultCtor();
+    bitmap.addLong(0L);
+    bitmap.addLong(65536L);
+
+    bitmap.flip(0L);
+
+    assertFalse(bitmap.isEmpty());
+    assertEquals(1, bitmap.getLongCardinality());
+    assertEquals(65536L, bitmap.first());
+    assertEquals(65536L, bitmap.last());
+  }
+
+  @Test
+  public void testFlipEmptiesLastBucket() {
+    Roaring64Bitmap bitmap = newDefaultCtor();
+    bitmap.addLong(0L);
+    bitmap.addLong(65536L);
+
+    bitmap.flip(65536L);
+
+    assertFalse(bitmap.isEmpty());
+    assertEquals(1, bitmap.getLongCardinality());
+    assertEquals(0L, bitmap.first());
+    assertEquals(0L, bitmap.last());
   }
 
   @Test
@@ -1924,6 +2138,18 @@ public class TestRoaring64Bitmap {
     }
     bitmap.getReverseLongIterator().advanceIfNeeded(-1); // should not crash
     bitmap.getReverseLongIteratorFrom(-1); // should not crash
+  }
+
+  @Test
+  public void testSkipReverseBelowEveryValueOfAnArrayContainer() {
+    // the second container is array-backed and every value it holds is above the bound
+    Roaring64Bitmap bitmap = Roaring64Bitmap.bitmapOf(500L, 65536L + 1000L, 65536L + 2000L);
+
+    PeekableLongIterator pii = bitmap.getReverseLongIterator();
+    pii.advanceIfNeeded(65536L + 700L);
+
+    assertEquals(500L, pii.peekNext());
+    assertEquals(500L, pii.next());
   }
 
   @Test

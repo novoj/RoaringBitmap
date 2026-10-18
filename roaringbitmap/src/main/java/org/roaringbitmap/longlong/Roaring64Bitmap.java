@@ -3,8 +3,10 @@ package org.roaringbitmap.longlong;
 import org.roaringbitmap.ArrayContainer;
 import org.roaringbitmap.BitmapContainer;
 import org.roaringbitmap.Container;
+import org.roaringbitmap.ContainerPointer;
 import org.roaringbitmap.PeekableCharIterator;
 import org.roaringbitmap.RelativeRangeConsumer;
+import org.roaringbitmap.RoaringBitmap;
 import org.roaringbitmap.RunContainer;
 import org.roaringbitmap.Util;
 import org.roaringbitmap.art.ContainerIterator;
@@ -19,7 +21,6 @@ import java.io.IOException;
 import java.io.ObjectInput;
 import java.io.ObjectOutput;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -410,7 +411,12 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
         this.highLowContainer.put(high, containerClone2);
       } else {
         Container freshOne = containerWithIndex.getContainer().ixor(container);
-        this.highLowContainer.replaceContainer(containerWithIndex.getContainerIdx(), freshOne);
+        if (freshOne.isEmpty()) {
+          // an emptied container must not stay registered: it would break first()/last()
+          this.highLowContainer.remove(high);
+        } else {
+          this.highLowContainer.replaceContainer(containerWithIndex.getContainerIdx(), freshOne);
+        }
       }
     }
   }
@@ -444,7 +450,9 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
         Container container1 = x1.highLowContainer.getContainer(containerIdx1);
         Container container2 = x2.highLowContainer.getContainer(containerIdx2);
         Container xorResult = container1.xor(container2);
-        result.highLowContainer.put(highKey1, xorResult);
+        if (!xorResult.isEmpty()) {
+          result.highLowContainer.put(highKey1, xorResult);
+        }
 
         highKey1 = it1.hasNext() ? it1.next() : null;
         highKey2 = it2.hasNext() ? it2.next() : null;
@@ -869,6 +877,112 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
   }
 
   /**
+   * Serializes this bitmap in the portable 64-bit format.
+   *
+   * <p>The format is specified at
+   * https://github.com/RoaringBitmap/RoaringFormatSpec#extension-for-64-bit-implementations. Call
+   * {@link #runOptimize} first for better compression.
+   *
+   * @param out the output stream
+   * @throws IOException if the bitmap cannot be written
+   */
+  public void serializePortable(DataOutput out) throws IOException {
+    long bucketCount = portableBucketCount();
+    if (bucketCount > LongUtils.MAX_UNSIGNED_INT) {
+      throw new IOException("Too many portable serialization buckets: " + bucketCount);
+    }
+    out.writeLong(Long.reverseBytes(bucketCount));
+
+    LeafNodeIterator iterator = highLowContainer.highKeyLeafNodeIterator(false);
+    while (iterator.hasNext()) {
+      long high32 = iterator.peekNext().getKey() >>> 16;
+      out.writeInt(Integer.reverseBytes((int) high32));
+      nextPortableBucket(iterator, high32).serialize(out);
+    }
+  }
+
+  /**
+   * Deserializes this bitmap from the portable 64-bit format.
+   *
+   * <p>Bucket count and key order are checked; container contents are not. The bitmap is unchanged
+   * if reading fails.
+   *
+   * @param in the input stream
+   * @throws IOException if the input cannot be read or violates the portable format
+   */
+  public void deserializePortable(DataInput in) throws IOException {
+    long bucketCount = Long.reverseBytes(in.readLong());
+    if (bucketCount < 0 || bucketCount > LongUtils.MAX_UNSIGNED_INT) {
+      throw new IOException("Invalid portable serialization bucket count");
+    }
+
+    HighLowContainer deserialized = new HighLowContainer();
+    long previousHigh32 = -1;
+    for (long bucket = 0; bucket < bucketCount; bucket++) {
+      long high32 = Integer.toUnsignedLong(Integer.reverseBytes(in.readInt()));
+      if (high32 <= previousHigh32) {
+        throw new IOException("Bucket keys must be strictly increasing");
+      }
+      previousHigh32 = high32;
+
+      RoaringBitmap lowBitmap = new RoaringBitmap();
+      lowBitmap.deserialize(in);
+      ContainerPointer pointer = lowBitmap.getContainerPointer();
+      int previousKey = -1;
+      while (pointer.getContainer() != null) {
+        int key = pointer.key();
+        if (key <= previousKey) {
+          throw new IOException("Container keys must be strictly increasing");
+        }
+        previousKey = key;
+
+        Container container = pointer.getContainer();
+        if (!container.isEmpty()) {
+          long value = (high32 << 32) | ((long) key << 16);
+          deserialized.put(LongUtils.highPart(value), container);
+        }
+        pointer.advance();
+      }
+    }
+    highLowContainer = deserialized;
+  }
+
+  /** Returns the portable serialized size in bytes. */
+  public long portableSerializedSizeInBytes() {
+    long size = 8;
+    LeafNodeIterator iterator = highLowContainer.highKeyLeafNodeIterator(false);
+    while (iterator.hasNext()) {
+      long high32 = iterator.peekNext().getKey() >>> 16;
+      size += 4 + nextPortableBucket(iterator, high32).serializedSizeInBytes();
+    }
+    return size;
+  }
+
+  private long portableBucketCount() {
+    long bucketCount = 0;
+    long previousHigh32 = -1;
+    LeafNodeIterator iterator = highLowContainer.highKeyLeafNodeIterator(false);
+    while (iterator.hasNext()) {
+      long high32 = iterator.next().getKey() >>> 16;
+      if (high32 != previousHigh32) {
+        bucketCount++;
+        previousHigh32 = high32;
+      }
+    }
+    return bucketCount;
+  }
+
+  private RoaringBitmap nextPortableBucket(LeafNodeIterator iterator, long high32) {
+    // Safe because serialize() does not mutate containers.
+    RoaringBitmap bitmap = new RoaringBitmap();
+    while (iterator.hasNext() && iterator.peekNext().getKey() >>> 16 == high32) {
+      LeafNode leaf = iterator.next();
+      bitmap.append((char) leaf.getKey(), highLowContainer.getContainer(leaf.getContainerIdx()));
+    }
+    return bitmap;
+  }
+
+  /**
    * Serialize this bitmap.
    *
    * Unlike RoaringBitmap, there is no specification for now: it may change from one java version to
@@ -1005,15 +1119,7 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
    * @param x integer value representing the index in a bitmap
    */
   public void remove(final long x) {
-    byte[] highKey = LongUtils.highPart(x);
-    ContainerWithIndex containerWithIdx = highLowContainer.searchContainer(highKey);
-    if (containerWithIdx != null) {
-      char low = LongUtils.lowPart(x);
-      containerWithIdx.getContainer().remove(low);
-      if (containerWithIdx.getContainer().isEmpty()) {
-        highLowContainer.remove(highKey);
-      }
-    }
+    removeLong(x);
   }
 
   /**
@@ -1175,7 +1281,12 @@ public class Roaring64Bitmap implements Externalizable, LongBitmapDataProvider {
     } else {
       char low = LongUtils.lowPart(x);
       Container freshOne = containerWithIndex.getContainer().flip(low);
-      highLowContainer.replaceContainer(containerWithIndex.getContainerIdx(), freshOne);
+      if (freshOne.isEmpty()) {
+        // an emptied container must not stay registered: it would break first()/last()
+        highLowContainer.remove(high);
+      } else {
+        highLowContainer.replaceContainer(containerWithIndex.getContainerIdx(), freshOne);
+      }
     }
   }
 
